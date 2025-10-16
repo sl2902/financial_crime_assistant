@@ -7,7 +7,7 @@ import requests
 from bs4 import BeautifulSoup
 import json
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import time
 from loguru import logger
 import re
@@ -84,8 +84,20 @@ def scrape_sec_releases(n_page: int) -> List[Dict[str, Any]]:
 
     return releases
 
+def format_date(raw_date: str) -> date:
+    """Standardize the raw date to format date(Y, m, d)"""
+    try:
+        mod_date = raw_date.replace('.', '').replace(',', '')
+        mm, *remaining_part = mod_date.split()
+        mm = mm[:3]
+        cleaned_str = ' '.join([mm] + remaining_part)
+        return datetime.strptime(cleaned_str, '%b %d %Y').date()
+    except Exception as e:
+        logger.warning(f"Date normaalization failed for {raw_date}")
+        return None
+
 async def scrape_release_content(
-      main_link: str, 
+      release: Dict[str, Any], 
       session: aiohttp.ClientSession,
       semaphore: asyncio.Semaphore
     ):
@@ -93,6 +105,7 @@ async def scrape_release_content(
     # limit parallelism
     async with semaphore:
         try:
+            main_link = release.get("main_link")
             async with session.get(main_link, headers=headers) as response:
                 if response.status == 403:
                     logger.warning(f"403 Forbidden: {main_link}")
@@ -110,6 +123,10 @@ async def scrape_release_content(
                 return {
                         'title': title_text,
                         'content': content,
+                        'url': main_link,
+                        'lr_no': release.get("lr_no"),
+                        'date': str(format_date(release.get("date"))),
+                        'see_also': release.get('see_also_links'),
                         'success': True
                 }
         except Exception as e:
@@ -145,9 +162,9 @@ async def main():
             tasks = []
             releases = scrape_sec_releases(idx)
             for release in releases:
-                main_link = release.get("main_link")
+                # main_link = release.get("main_link")
                 # logger.info(f"Scraping link {main_link}")
-                tasks.append(scrape_release_content(main_link, session, semaphore))
+                tasks.append(scrape_release_content(release, session, semaphore))
             contents = await asyncio.gather(*tasks)
             msg = 'first' if idx == 0 else 'next'
             logger.info(f"Saving content for the {msg} {ITEMS_PER_PAGE} litigation releases - {idx * ITEMS_PER_PAGE}-{(idx + 1 ) * ITEMS_PER_PAGE - 1}")
