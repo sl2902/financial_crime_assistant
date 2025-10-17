@@ -1,6 +1,7 @@
 """Load chunked documents into Qdrant"""
 import os
 import json
+import glob
 from loguru import logger
 from typing import Any, List, Dict, Tuple
 from dotenv import load_dotenv
@@ -26,6 +27,7 @@ class QdrantStoreManager:
             self,
             collection_name: str = "financial_crimes",
             location: str = ":memory:",
+            path: str = None,
             url: str = None,
             dim: int = 1536, 
             distance: Distance = Distance.COSINE, 
@@ -33,12 +35,15 @@ class QdrantStoreManager:
             ):
         self.collection_name = collection_name
         self.location = location
+        self.path = path
         self.url = url
         self.dim = dim
         self.distance = distance
         self.embedding_model = embedding_model
         if url:
             self.client = QdrantClient(url=url)
+        elif path:
+            self.client = QdrantClient(path=path)
         else:
             self.client = QdrantClient(location=location)
         self.embeddings = OpenAIEmbeddings(model=self.embedding_model)
@@ -79,17 +84,18 @@ def vector_store_retriever(vector_store_manager: QdrantVectorStore, search_kwarg
 
 if __name__ == "__main__":
 
-    with open("data/raw/sec_releases_batch_1.json", 'r') as f:
-        data = json.load(f)
-        releases = data["releases"]
-
-    vector_store_manager = QdrantStoreManager()
+    vector_store_manager = QdrantStoreManager(path="./qdrant_data")
 
     vector_store_manager.create_collection()
 
-    chunks = recursive_chunking(releases, chunk_size=750, chunk_overlap=100)
+    batch_files = glob.glob("data/raw/sec_releases_batch_*.json")
+    for batch_file in batch_files:
+        with open(batch_file, 'r') as f:
+            data = json.load(f)
+            releases = data["releases"]
+        chunks = recursive_chunking(releases, chunk_size=750, chunk_overlap=100)
 
-    load_to_qdrant(chunks, vector_store_manager)
+        load_to_qdrant(chunks, vector_store_manager)
 
     retriever = vector_store_retriever(vector_store_manager)
     answer = retriever.invoke("What kind of crimes have people been accused of?")
