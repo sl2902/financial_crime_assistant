@@ -34,7 +34,7 @@ class GenerateSyntheticTestset:
             generator_llm: LangchainLLMWrapper = None,
             generator_embeddings: LangchainEmbeddingsWrapper = None
         ):
-        self.generator_llm = LangchainLLMWrapper(ChatOpenAI(model="gpt-4.1-nano"))
+        self.generator_llm = LangchainLLMWrapper(ChatOpenAI(model="gpt-4.1-mini"))
         self.generator_embeddings = LangchainEmbeddingsWrapper(OpenAIEmbeddings())
         self.query_distribution = [
                 (SingleHopSpecificQuerySynthesizer(llm=generator_llm), 0.5),
@@ -123,10 +123,10 @@ def main():
 
     testset_df = ragas_testset.to_pandas()
     logger.info("Save the RAGAS tesetset as a csv file")
-    testset_df.to_csv("evaluation/testset.csv", index=False)
+    testset_df.to_csv("evaluation/financial_crimes_testset_ragas.csv", index=False)
 
     logger.info("Save the RAGAS testset in native format")
-    testset_df.to_jsonl("evaluation/financial_crimes_testset_ragas.json", orient="records", indent=2)
+    ragas_testset.to_jsonl("evaluation/financial_crimes_testset_ragas.json")
 
 if __name__ == "__main__":
     main()
