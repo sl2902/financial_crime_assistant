@@ -1,0 +1,13 @@
+# python
+__pycache__
+
+# mac
+.DS_Store
+
+# env
+.env
+uv.lock
+
+# data
+data
+qdrant_data/
