@@ -108,11 +108,13 @@ class EvaluateRAGASDataset:
             rag_prompt: ChatPromptTemplate, 
             chat_model: ChatOpenAI, 
             naive_retriever: Dict[str, Any],
+            k: int = 5,
     ) -> Dict[str, Any]:
         """Create a contextual compression retriever"""
         compressor = CohereRerank(model="rerank-v3.5")
         compression_retriever = ContextualCompressionRetriever(
-            base_compressor=compressor, base_retriever=naive_retriever
+            base_compressor=compressor, base_retriever=naive_retriever,
+            search_kwargs={"k": k}
         )
 
         return compression_retriever
@@ -182,6 +184,9 @@ class EvaluateRAGASDataset:
         return evaluate(
             dataset=dataset,
             metrics=[
+                Faithfulness(), 
+                FactualCorrectness(), 
+                ResponseRelevancy(),
                 LLMContextRecall(),      # Primary retrieval metric
                 ContextEntityRecall(),   # Entity coverage metric
                 NoiseSensitivity(),      # Noise filtering metric
@@ -299,7 +304,7 @@ def main():
         # "bm25_retriever": bm25_retriever_chain(rag_prompt, chat_model, dataset),
         "contextual_compression_retriever": ragas_dataset.contextual_compression_retriever_chain(
             rag_prompt, chat_model, 
-            ragas_dataset.naive_retriever_chain(rag_prompt, chat_model, vector_store)
+            ragas_dataset.naive_retriever_chain(vector_store)
         ),
         # "multi_query_retriever": multiquery_retriever_chain(rag_prompt, chat_model, 
         # naive_retriever_chain(rag_prompt, chat_model, vector_store)),
@@ -368,6 +373,9 @@ def main():
         # Store results
         results_summary.append({
             "retriever": retriever_name,
+            "faithfulness": results_dict.get("faithfulness", 0),
+            "factual_correctness": results_dict.get("factual_correctness", 0),
+            "answer_relevancy": results_dict.get("answer_relevancy", 0),
             "context_recall": results_dict.get("context_recall", 0),
             "context_entity_recall": results_dict.get("context_entity_recall", 0),
             "noise_sensitivity": results_dict.get("noise_sensitivity_relevant", 0),
