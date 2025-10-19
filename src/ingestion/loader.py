@@ -99,7 +99,23 @@ def vector_store_retriever(vector_store_manager: QdrantVectorStore, search_kwarg
 
     return vector_store.as_retriever(search_kwargs=search_kwargs)
 
+def test_loader(query: str) -> None:
+    """Test loader"""
+    processed_filepath = "data/processed/"
+    vector_store_manager = QdrantStoreManager(path="./qdrant_data")
+    if vector_store_manager.collection_exists():
+        retriever = vector_store_retriever(vector_store_manager)
+        docs = retriever.invoke(query)
+
+        # Check first retrieved chunk
+        print("=== CHUNK CONTENT ===")
+        print(docs[0].page_content)
+        print("\n=== METADATA ===")
+        print(docs[0].metadata)
+
 def main():
+
+    processed_filepath = "data/processed/"
     vector_store_manager = QdrantStoreManager(path="./qdrant_data")
 
     if vector_store_manager.collection_exists():
@@ -109,7 +125,7 @@ def main():
     vector_store_manager.create_collection()
 
     logger.info("Loading SEC releases into Qdrant...")
-    batch_files = glob.glob("data/raw/sec_releases_batch_*.json")
+    batch_files = glob.glob(f"{processed_filepath}/sec_releases_batch_*.json")
     for batch_file in batch_files:
         with open(batch_file, 'r') as f:
             data = json.load(f)
@@ -132,3 +148,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    # test_loader("Robert Allen Stanford penalties")
