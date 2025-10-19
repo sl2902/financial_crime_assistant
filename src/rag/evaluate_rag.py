@@ -108,13 +108,13 @@ class EvaluateRAGASDataset:
             rag_prompt: ChatPromptTemplate, 
             chat_model: ChatOpenAI, 
             naive_retriever: Dict[str, Any],
-            k: int = 5,
+            top_n: int = 5,
     ) -> Dict[str, Any]:
         """Create a contextual compression retriever"""
-        compressor = CohereRerank(model="rerank-v3.5")
+        compressor = CohereRerank(model="rerank-v3.5", top_n=top_n)
         compression_retriever = ContextualCompressionRetriever(
             base_compressor=compressor, base_retriever=naive_retriever,
-            search_kwargs={"k": k}
+            # search_kwargs={"k": k}
         )
 
         return compression_retriever
