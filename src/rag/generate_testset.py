@@ -30,10 +30,14 @@ KG_FILEPATH = 'data/kg/financial_crimes_kg.json'
 
 class GenerateSyntheticTestset:
     def __init__(
-            self, 
+            self,
+            n_files: int = 1,
+            n_records: int = 50,
             generator_llm: LangchainLLMWrapper = None,
             generator_embeddings: LangchainEmbeddingsWrapper = None
         ):
+        self.n_files = n_files
+        self.n_records = n_records
         self.generator_llm = LangchainLLMWrapper(ChatOpenAI(model="gpt-4.1-mini"))
         self.generator_embeddings = LangchainEmbeddingsWrapper(OpenAIEmbeddings())
         self.query_distribution = [
@@ -45,11 +49,13 @@ class GenerateSyntheticTestset:
     
     def convert_json_to_document(self) -> List[Document]:
         """Convert JSON files to Langchain Documents"""
+        # limiting to 1 file and n_records because testset generation is time-consuming
+        # and expensive
         all_documents = []
-        for batch_file in batch_files[:1]:
+        for batch_file in batch_files[:self.n_files]:
             with open(batch_file, 'r') as f:
                 data = json.load(f)
-                releases = data["releases"][:20]
+                releases = data["releases"][:self.n_records]
             documents = []
             for release in releases:
                 document = json_to_document(release)
@@ -119,14 +125,14 @@ def main():
     docs = sdg.convert_json_to_document()
 
     logger.info("Generate RAGAS testset dataset")
-    ragas_testset = sdg.generate_testset(docs)
+    ragas_testset = sdg.generate_testset(docs, testset_size=20)
 
     testset_df = ragas_testset.to_pandas()
     logger.info("Save the RAGAS tesetset as a csv file")
     testset_df.to_csv("evaluation/financial_crimes_testset_ragas.csv", index=False)
 
     logger.info("Save the RAGAS testset in native format")
-    ragas_testset.to_jsonl("evaluation/financial_crimes_testset_ragas.json")
+    ragas_testset.to_jsonl("evaluation/financial_crimes_testset_ragas.jsonl")
 
 if __name__ == "__main__":
     main()
