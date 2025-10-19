@@ -42,7 +42,11 @@ def recursive_chunking(
                 metadata={
                     'lr_no': doc.get('lr_no', '').replace("Release No.", ""),
                     'date': doc.get('date', ''),
-                    'url': doc.get('main_link', ''),
+                    'url': doc.get('url', None) or doc.get('main_link', ''),
+                    'content_length': doc.get('content_length'),
+                    'crime_type': doc.get('crime_type', []),
+                    'amounts': doc.get('amounts', []),
+                    'people_mentioned': doc.get('people_mentioned', []),
                     'title': doc.get('title', ''),
                     'see_also': doc.get('see_also', ''),
                     'source': 'SEC'
