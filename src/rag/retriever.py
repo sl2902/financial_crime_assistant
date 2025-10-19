@@ -1,5 +1,6 @@
 """Build RAG Retriever using LangGraph"""
 import os
+import re
 from typing import Any, List, Dict, Tuple
 from dotenv import load_dotenv
 from typing_extensions import TypedDict, Annotated
@@ -23,6 +24,7 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 
 from src.ingestion.loader import QdrantStoreManager, vector_store_retriever
+from src.utils.document_utils import fix_merged_text
 
 load_dotenv()
 
@@ -44,8 +46,11 @@ CHAT_PROMPT = """
 
             Instructions:
             - Answer based ONLY on the provided context
+            - When citing sources, use the format: [LR-XXXXX](URL) instead of just "Document 1"
+            - Include the full SEC.gov URL for each citation
             - If the context doesn't contain the answer, say "I don't have enough information in the provided documents"
             - Cite specific cases, amounts, dates and location when relevant
+            - When mentioning monetary amounts, ALWAYS include the dollar sign ($) - for example: "$6.76 billion" not "6.76 billion"
             - Be concise but comprehensive
 
             ANSWER:
@@ -60,11 +65,11 @@ class AgentState(TypedDict):
   messages: Annotated[list, add_messages]
 
 class FinancialCrimeRAGSystem:
-    def __init__(
-          self, 
-          retriever,
-          llm = None,
-          relevance_threshold: float = 0.7):
+   def __init__(
+         self, 
+         retriever,
+         llm = None,
+         relevance_threshold: float = 0.7):
       self.retriever = retriever
       self.llm = llm or ChatOpenAI(model="gpt-4o-mini", temperature=0)
       self.relevance_threshold = relevance_threshold
@@ -74,10 +79,10 @@ class FinancialCrimeRAGSystem:
       self.agent_graph = self._build_agent_graph()
 
       def search_sec_documents(query: str, search_k : int = 3) -> str:
-        """Search SEC enforcement documents about financial crimes, fraud cases, and penalties"""
-        retrieved_docs = self.retriever.invoke(query)
-        return "\n\n".join([doc.page_content for doc in retrieved_docs[:search_k]])
-      
+         """Search SEC enforcement documents about financial crimes, fraud cases, and penalties"""
+         retrieved_docs = self.retriever.invoke(query)
+         return "\n\n".join([doc.page_content for doc in retrieved_docs[:search_k]])
+         
       self.rag_tool = Tool(
          name="search_sec_documents",
          func=search_sec_documents,
@@ -85,101 +90,108 @@ class FinancialCrimeRAGSystem:
       )
       self.tool_belt = [self.tavily_search_tool, self.rag_tool]
       self.llm_bind_tool = self.llm.bind_tools(self.tool_belt)
-    
-    def __repr__(self):
+   
+   def __repr__(self):
       return f"FinancialCrimeRAGSystem(llm={self.llm.model_name})"
    
-    def _retrieve(self, state: State) -> Dict:
-        """Retrieve chunks from Qdrant Vector Store"""
-        retrieved_docs = self.retriever.invoke(state["query"])
-        return {
+   def _retrieve(self, state: State) -> Dict:
+      """Retrieve chunks from Qdrant Vector Store"""
+      retrieved_docs = self.retriever.invoke(state["query"])
+      return {
             "context": retrieved_docs
-        }
-    
-    def _generate(self, state: State) -> Dict:
-        """Generate Response using LLM"""
-        context = "\n\n".join(
-           [
-              f"Document {i+1} ({doc.metadata.get('lr_no', 'Unknown')}):\n{doc.page_content}"
-              for i, doc in enumerate(state["context"])
-           ]
-           
-        )
-        generator_chain =  self.chat_prompt| self.llm | StrOutputParser()
-        response = generator_chain.invoke(
+      }
+   
+   def _generate(self, state: State) -> Dict:
+      """Generate Response using LLM"""
+      context = "\n\n".join(
+         [
+            f"Document {i+1} ({doc.metadata.get('lr_no', 'Unknown')})\n"
+            f"Source: {doc.metadata.get('url', 'N/A')}\n"
+            f"Content: {doc.page_content}"
+            for i, doc in enumerate(state["context"])
+         ]
+         
+      )
+      generator_chain =  (
+         self.chat_prompt
+         | self.llm 
+         | StrOutputParser()
+      )
+      response = generator_chain.invoke(
             {
-              "query" : state["query"], 
-              "context" : context
+            "query" : state["query"], 
+            "context" : context
             }
-        )
-        return {"response" : response}
-    
-    def _call_agent_model(self, state: AgentState) -> Dict:
-        """Call Agent node"""
-        messages = state["messages"]
-        response = self.llm_bind_tool.invoke(messages)
-        
-        return {
-           "messages" : [response]
-        }
-    
-    def _tool_call(self, state: AgentState) -> ToolNode:
-       """Initialize ToolNode"""
-       return ToolNode(self.tool_belt)
+      )
 
-    def _create_prompt(self) -> ChatPromptTemplate:
-        """Create Chat Prompt Template"""
-        HUMAN_TEMPLATE = CHAT_PROMPT
+      return {"response" : response}
+   
+   def _call_agent_model(self, state: AgentState) -> Dict:
+      """Call Agent node"""
+      messages = state["messages"]
+      response = self.llm_bind_tool.invoke(messages)
+      
+      return {
+         "messages" : [response]
+      }
+   
+   def _tool_call(self, state: AgentState) -> ToolNode:
+      """Initialize ToolNode"""
+      return ToolNode(self.tool_belt)
 
-        return ChatPromptTemplate.from_messages([
+   def _create_prompt(self) -> ChatPromptTemplate:
+      """Create Chat Prompt Template"""
+      HUMAN_TEMPLATE = CHAT_PROMPT
+
+      return ChatPromptTemplate.from_messages([
             ("human", HUMAN_TEMPLATE)
-        ])
+      ])
     
-    def _build_graph(self):
-        """Build a basic RAG LangGraph workflow"""
-        workflow = StateGraph(State)
+   def _build_graph(self):
+      """Build a basic RAG LangGraph workflow"""
+      workflow = StateGraph(State)
 
-        workflow.add_node("retrieve", self._retrieve)
-        workflow.add_node("generate", self._generate)
-        workflow.add_edge(START, "retrieve")
-        workflow.add_edge("retrieve", "generate")
+      workflow.add_node("retrieve", self._retrieve)
+      workflow.add_node("generate", self._generate)
+      workflow.add_edge(START, "retrieve")
+      workflow.add_edge("retrieve", "generate")
 
-        return workflow.compile()
+      return workflow.compile()
     
-    def _build_agent_graph(self):
-       """Build an Agent RAG LangGraph workflow"""
-       workflow = StateGraph(AgentState)
+   def _build_agent_graph(self):
+      """Build an Agent RAG LangGraph workflow"""
+      workflow = StateGraph(AgentState)
 
-       workflow.add_node("agent", self._call_agent_model)
-       workflow.add_node("action", self._tool_call)
-       workflow.set_entry_point("agent")
-       workflow.add_edge("action", "agent")
-       workflow.add_conditional_edges("agent", self._should_continue)
+      workflow.add_node("agent", self._call_agent_model)
+      workflow.add_node("action", self._tool_call)
+      workflow.set_entry_point("agent")
+      workflow.add_edge("action", "agent")
+      workflow.add_conditional_edges("agent", self._should_continue)
 
-       return workflow.compile()
+      return workflow.compile()
     
-    def _convert_inputs(self, input_object: Dict):
-       """Preprocess user query"""
-       return {"messages" : [HumanMessage(content=input_object["text"])]}
+   def _convert_inputs(self, input_object: Dict):
+      """Preprocess user query"""
+      return {"messages" : [HumanMessage(content=input_object["text"])]}
 
-    def _parse_output(self, input_state: Dict):
-       """Parse LLM output"""
-       return {"answer" : input_state["messages"][-1].content}
+   def _parse_output(self, input_state: Dict):
+      """Parse LLM output"""
+      return {"answer" : input_state["messages"][-1].content}
     
-    def _generate_agent_response(self):
-       """Prepare Agent LCEL Chain"""
-       agent_chain_with_formatting = self._convert_inputs | self._build_agent_graph | self._parse_output
+   def _generate_agent_response(self):
+      """Prepare Agent LCEL Chain"""
+      agent_chain_with_formatting = self._convert_inputs | self._build_agent_graph | self._parse_output
 
-       return agent_chain_with_formatting
+      return agent_chain_with_formatting
     
-    def _should_continue(self, state: AgentState):
-        """Conditional routing"""
-        last_message = state["messages"][-1]
+   def _should_continue(self, state: AgentState):
+      """Conditional routing"""
+      last_message = state["messages"][-1]
 
-        if last_message.tool_calls:
-          return "action"
+      if last_message.tool_calls:
+         return "action"
         
-        return END
+      return END
     
     # async def agent_query(self, inputs: Dict[str, Any]) -> str:
     #     """Query method for RAG Agent with streaming"""
@@ -193,53 +205,52 @@ class FinancialCrimeRAGSystem:
     
     #     return final_response
     
-    def query(self, question: str) -> str:
-       """Main query method"""
-       result = self.graph.invoke({
+   def query(self, question: str) -> str:
+      """Main query method"""
+      result = self.graph.invoke({
           "query": question,
           "context": [],
           "response": ""
-       })
+      })
 
-       return result["response"]
+      return result["response"]
     
-    def agent_query(self, question: str) -> str:
-       """Query method for RAG Agent"""
-       inputs = {"messages": [HumanMessage(content=question)]}
-       result = self.agent_graph.invoke(
-          inputs
-       )
-
-       return result["messages"][-1].content
+   def agent_query(self, question: str) -> str:
+      """Query method for RAG Agent"""
+      inputs = {"messages": [HumanMessage(content=question)]}
+      result = self.agent_graph.invoke(
+         inputs
+      )
+      return result["messages"][-1].content
 
 if __name__ == "__main__":
    
-    store_manager = QdrantStoreManager(path="./qdrant_data")
+   store_manager = QdrantStoreManager(path="./qdrant_data")
 
-    retriever = vector_store_retriever(store_manager)
+   retriever = vector_store_retriever(store_manager)
 
-    rag_system = FinancialCrimeRAGSystem(retriever=retriever)
+   rag_system = FinancialCrimeRAGSystem(retriever=retriever)
 
-    # question = "What is securities fraud and what are the typical penalties?"
-    # answer = rag_system.query(question)
-    
-    # uses sec_documents
-    question = "What penalties were issued for insider trading in 2025?"
+   # question = "What is securities fraud and what are the typical penalties?"
+   # answer = rag_system.query(question)
+   
+   # uses sec_documents
+   question = "What penalties were issued for insider trading in 2025?"
 
-    # answer = rag_system.agent_query(question)
+   # answer = rag_system.agent_query(question)
 
-    # use Tavily
-    question = "What financial crime news happened this week?"
+   # use Tavily
+   question = "What financial crime news happened this week?"
 
-    answer = rag_system.agent_query(question)
+   answer = rag_system.agent_query(question)
 
-    logger.info(f"Question: {question}")
-    logger.info(f"Answer: {answer}")
+   logger.info(f"Question: {question}")
+   logger.info(f"Answer: {answer}")
 
-    test_queries = [
-    "What is securities fraud and what are typical penalties?",
-    "What penalties were issued for insider trading in 2025?",
-    "Tell me about Ponzi scheme cases",
-    "What is the difference between securities fraud and wire fraud?",
+   test_queries = [
+   "What is securities fraud and what are typical penalties?",
+   "What penalties were issued for insider trading in 2025?",
+   "Tell me about Ponzi scheme cases",
+   "What is the difference between securities fraud and wire fraud?",
 ]
 
