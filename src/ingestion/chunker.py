@@ -36,9 +36,13 @@ def recursive_chunking(
         if 'success' in doc and not doc['success']:
             logger.warning(f"Skipping document as there is no content")
             continue
+        # Appending metadata to help with improved search results
+        header = f"{doc.get('lr_no', 'Unknown')} | {doc.get('title', 'Unknown')} | {doc.get('date', 'Unknown')} | {', '.join(doc.get('crime_type', []))}"
+        
+        enriched_content = f"{header}\n\n{doc.get('content', '')}"
         documents.append(
             Document(
-                page_content=doc['content'],
+                page_content=enriched_content or doc['content'],
                 metadata={
                     'lr_no': doc.get('lr_no', '').replace("Release No.", ""),
                     'date': doc.get('date', ''),
