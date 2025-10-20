@@ -2,10 +2,30 @@
 import streamlit as st
 import pandas as pd
 from pathlib import Path
+import markdown2
 
 from src.ingestion.loader import QdrantStoreManager, vector_store_retriever as get_retriever
 from src.rag.retriever import FinancialCrimeRAGSystem
-from src.utils.document_utils import fix_merged_text
+
+def custom_success(html_content: str, title="Success!"):
+    """Custom success box that works with HTML content"""
+    st.markdown(
+        f"""
+        <div style="
+            background-color: #d4edda;
+            border-color: #c3e6cb;
+            border: 1px solid transparent;
+            border-radius: 0.25rem;
+            padding: 0.75rem 1.25rem;
+            margin-bottom: 1rem;
+            color: #155724;
+        ">
+            <strong>✅ {title}</strong>
+            <hr style="margin: 10px 0; border-color: #c3e6cb;">
+            {html_content}
+        """,
+        unsafe_allow_html=True
+    )
 
 # Page config
 st.set_page_config(
@@ -146,9 +166,7 @@ if st.button(button_text, type="primary") or (query and len(st.session_state.mes
                 else:
                     # Use agentic RAG (can use web search + documents)
                     response = st.session_state.rag_system.agent_query(query)
-                
-                # Apply text fixing
-                response = fix_merged_text(response)
+            
                 
                 if hasattr(response, "content"):
                     response = response.content
@@ -177,45 +195,43 @@ if st.session_state.messages:
     st.info(latest["question"])
     
     st.markdown("**Answer:**")
-    
-    # Try to display the answer
-    answer_text = str(latest["answer"])
-    
-    # Use code block for now to avoid formatting issues
-    st.code(answer_text, language='markdown')
-    
-    # Option to view in different formats
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        if st.button("📝 View as Text"):
-            st.text(answer_text)
-    with col2:
-        if st.button("📄 View as Markdown"):
-            try:
-                st.markdown(answer_text)
-            except:
-                st.error("Cannot render as markdown")
-    with col3:
-        if st.button("📋 Copy to Clipboard"):
-            st.code(answer_text, language=None)
-            st.success("Ready to copy!")
-    
-    # Debug section
-    with st.expander("🔍 Debug Information", expanded=False):
-        st.write(f"**Mode Used:** {mode_used}")
-        st.write(f"**Response Length:** {len(answer_text)} characters")
-        
-        # Check for common issues
-        issues = []
-        if "alongwith" in answer_text.lower():
-            issues.append("Merged words detected")
-        if any(ord(c) > 127 for c in answer_text[:500]):
-            issues.append("Unicode characters detected")
-        
-        if issues:
-            st.warning(f"Issues found: {', '.join(issues)}")
-        else:
-            st.success("No formatting issues detected")
+    answer_text = latest["answer"]
+
+    if isinstance(answer_text, dict):
+        # Agentic RAG response
+        display_text = answer_text.get("result", str(answer_text))
+        tools_used = answer_text.get("tools_used", [])
+        sources = answer_text.get("sources", [])
+        rag_query = answer_text.get("rag_query", "")
+    else:
+        # Plain RAG response (string)
+        display_text = str(answer_text)
+        tools_used = []
+        sources = []
+        rag_query = ""
+    html = markdown2.markdown(display_text, extras=['tables', 'fenced-code-blocks'])
+    custom_success(html)
+
+    result = latest["answer"]
+    if isinstance(result, dict) and result.get("tools_used"):
+        st.caption(f"🔧 Tools: {', '.join(result['tools_used'])}")
+        st.write(f'Number of sources {len(result.get("sources"))}')
+    # Show sources (expandable)
+    if isinstance(result, dict) and result.get("sources"):
+        with st.expander("📚 View Sources"):
+            for i, doc in enumerate(result["sources"], 1):
+                lr_no = doc.metadata.get('lr_no', 'Unknown')
+                url = doc.metadata.get('url', 'N/A')
+                date = doc.metadata.get('date', 'N/A')
+                crime = ', '.join(doc.metadata.get('crime_type', []))
+                
+                st.markdown(f"**{i}. {lr_no}** ({date})")
+                st.markdown(f"Crime Type: {crime}")
+                if rag_query:
+                    st.markdown(f"Query: {rag_query}")
+                st.markdown(f"[View on SEC.gov]({url})")
+                st.markdown(doc.page_content[:100] + "...")
+                st.divider()
     
     # Show conversation history
     if len(st.session_state.messages) > 1:
