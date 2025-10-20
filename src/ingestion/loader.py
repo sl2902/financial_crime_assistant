@@ -12,6 +12,13 @@ from langchain_openai import OpenAIEmbeddings
 
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import Distance, VectorParams
+from qdrant_client.models import (
+    Filter, 
+    FieldCondition, 
+    MatchValue, 
+    Match,
+    PayloadSchemaType
+)
 
 from src.ingestion.chunker import(
     recursive_chunking,
@@ -19,6 +26,7 @@ from src.ingestion.chunker import(
 
 load_dotenv()
 
+qdrant_filepath = "qdrant_data"
 
 class QdrantStoreManager:
     """Class for Vector storage"""
@@ -84,6 +92,17 @@ class QdrantStoreManager:
             collection_name=self.collection_name,
             embedding=self.embeddings,
         )
+    
+    def search_by_lr_number(self, lr_no: str) -> Tuple[List, int|None]:
+        """Search Qdrant store using LR No"""
+        flt = Filter(should=[FieldCondition(key="metadata.lr_no", match=MatchValue(value=lr_no))])
+        results = self.client.scroll(
+            collection_name="financial_crimes",
+            scroll_filter=flt,
+            limit=5,
+            with_payload=True
+        )
+        return results
 
 def load_to_qdrant(chunks: List[Document], vector_store_manager: QdrantVectorStore):
     """Load chunks into Qdrant"""
@@ -102,8 +121,8 @@ def vector_store_retriever(vector_store_manager: QdrantVectorStore, search_kwarg
 def test_loader(query: str) -> None:
     """Test loader"""
     processed_filepath = "data/processed/"
-    vector_store_manager = QdrantStoreManager(path="./qdrant_data")
-    if vector_store_manager.collection_exists():
+    vector_store_manager = QdrantStoreManager(path=qdrant_filepath)
+    if vector_store_manager.get_client().collection_exists():
         retriever = vector_store_retriever(vector_store_manager)
         docs = retriever.invoke(query)
 
@@ -116,11 +135,18 @@ def test_loader(query: str) -> None:
 def main():
 
     processed_filepath = "data/processed/"
-    vector_store_manager = QdrantStoreManager(path="./qdrant_data")
+    collection_name = "financial_crimes"
+    vector_store_manager = QdrantStoreManager(path=qdrant_filepath)
+
 
     if vector_store_manager.collection_exists():
         logger.warning("Collection already exists. Delete ./qdrant_data to re-ingest.")
-        return
+        try:
+            vector_store_manager.client.delete_collection("financial_crimes")
+            logger.warning("Deleted old collection")
+        except:
+            pass
+
 
     vector_store_manager.create_collection()
 
@@ -130,20 +156,40 @@ def main():
         with open(batch_file, 'r') as f:
             data = json.load(f)
             releases = data["releases"]
-        logger.info("Chunking documents...")
+        logger.info(f"Chunking documents for batch {batch_file}...")
         chunks = recursive_chunking(releases, chunk_size=750, chunk_overlap=100)
 
-        logger.info("Loading to Qdrant...")
-        load_to_qdrant(chunks, vector_store_manager)
+    #     logger.info("Loading to Qdrant...")
+    #     load_to_qdrant(chunks, vector_store_manager)
+    # all_docs = []
+    # for file in glob.glob(f"{processed_filepath}/*_clean.json"):
+    #     logger.info(f"Loading {file}")
+    #     with open(file) as f:
+    #         data = json.load(f)
+    #         all_docs.extend(data["releases"])
 
+    # logger.info(f"Total docs: {len(all_docs)}")
+
+    # # Chunk
+    # chunks = recursive_chunking(all_docs)
+    # logger.info(f"Total chunks: {len(chunks)}")
+
+
+    logger.success(f"Ingestion complete! Data persisted to {qdrant_filepath}")
+    
     retriever = vector_store_retriever(vector_store_manager)
 
-    logger.success("Ingestion complete! Data persisted to ./qdrant_data")
+    # # user test loading
+    # answer = retriever.invoke("What kind of crimes have people been accused of?")
 
-    # user test loading
-    answer = retriever.invoke("What kind of crimes have people been accused of?")
+    # logger.info(answer)
 
-    logger.info(answer)
+    results = vector_store_manager.search_by_lr_number('LR-26115')
+    if results[0]:
+        logger.info("LR-26415 is in Qdrant")
+        logger.info(f"Title: {results[0][0].payload.get('metadata').get('title')}")
+    else:
+        logger.warning("LR-26161 NOT in Qdrant - needs to be ingested!")
 
 
 if __name__ == "__main__":
