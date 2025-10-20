@@ -11,7 +11,7 @@ from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.messages import HumanMessage
-from langchain_openai import ChatOpenAI
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 # from langchain_community.tools.tavily_search import TavilySearchResults
 from langchain_tavily import TavilySearch
 from langchain.tools import Tool
@@ -23,8 +23,9 @@ from langgraph.graph import START, StateGraph, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 
+from qdrant_client.models import Filter, FieldCondition, MatchValue
+
 from src.ingestion.loader import QdrantStoreManager, vector_store_retriever
-from src.utils.document_utils import fix_merged_text
 
 load_dotenv()
 
@@ -60,6 +61,7 @@ class State(TypedDict):
   query: str
   context: List[Document]
   response: str
+  filter: Any
 
 class AgentState(TypedDict):
   messages: Annotated[list, add_messages]
@@ -69,7 +71,9 @@ class FinancialCrimeRAGSystem:
          self, 
          retriever,
          llm = None,
+         collection_name: str = "financial_crimes",
          relevance_threshold: float = 0.7):
+      self.collection_name = collection_name
       self.retriever = retriever
       self.llm = llm or ChatOpenAI(model="gpt-4o-mini", temperature=0)
       self.relevance_threshold = relevance_threshold
@@ -77,11 +81,36 @@ class FinancialCrimeRAGSystem:
       self.tavily_search_tool = TavilySearch(max_results=5)
       self.graph = self._build_graph()
       self.agent_graph = self._build_agent_graph()
+      self.current_filter = None
+      self.last_retrieved_docs = []
 
       def search_sec_documents(query: str, search_k : int = 3) -> str:
          """Search SEC enforcement documents about financial crimes, fraud cases, and penalties"""
-         retrieved_docs = self.retriever.invoke(query)
-         return "\n\n".join([doc.page_content for doc in retrieved_docs[:search_k]])
+         if self.current_filter:
+            logger.info(f"RAG tool using filter")
+            vector_store = self.retriever.vectorstore
+            # retrieved_docs = vector_store.similarity_search(
+            #    query=query,
+            #    k=search_k,
+            #    filter=self.current_filter
+            # )
+            results, _ = self.retriever.vectorstore.client.scroll(
+               collection_name=self.collection_name,
+               scroll_filter=self.current_filter,
+               limit=search_k,
+               with_payload=True
+            )
+            self.last_retrieved_docs = [
+               Document(
+                  page_content=point.payload.get("page_content", ""),
+                  metadata=point.payload.get("metadata", {})
+               )
+               for point in results
+         ]
+        
+         else:
+            self.last_retrieved_docs  = self.retriever.invoke(query)
+         return "\n\n".join([doc.page_content for doc in self.last_retrieved_docs ])
          
       self.rag_tool = Tool(
          name="search_sec_documents",
@@ -96,10 +125,58 @@ class FinancialCrimeRAGSystem:
    
    def _retrieve(self, state: State) -> Dict:
       """Retrieve chunks from Qdrant Vector Store"""
-      retrieved_docs = self.retriever.invoke(state["query"])
+      qdrant_filter = state.get("filter")
+      query = state.get("query")
+   
+      if qdrant_filter:
+         logger.info("USING FILTER SEARCH")
+         
+         vector_store = self.retriever.vectorstore
+
+         embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+         query_embedding = embeddings.embed_query(query)
+         
+         results = vector_store.client.query_points(
+               collection_name=self.collection_name,
+               query=query_embedding,
+               query_filter=qdrant_filter,
+               with_payload=True,
+               limit=5
+         )
+
+         retrieved_docs = []
+         for point in results.points:
+               # Check the payload structure
+               # payload = result.payload
+               payload = point.payload
+               
+               # The page_content is at top level
+               page_content = payload.get("page_content", "")
+               
+               # Metadata is nested
+               metadata = payload.get("metadata", {})
+               
+               # Log for debugging
+               logger.info(f"Doc lr_no: {metadata.get('lr_no')}, content length: {len(page_content)}")
+               
+               if page_content:  # Only add if we have content
+                  doc = Document(
+                     page_content=page_content,
+                     metadata=metadata
+                  )
+                  retrieved_docs.append(doc)
+               else:
+                  logger.warning("Found result but no page_content!")
+         
+         logger.info(f"Filter search returned {len(results.points)} results")
+      else:
+         logger.info("USING NORMAL SEARCH")
+         retrieved_docs = self.retriever.invoke(query)
+      
       return {
             "context": retrieved_docs
       }
+
    
    def _generate(self, state: State) -> Dict:
       """Generate Response using LLM"""
@@ -207,21 +284,99 @@ class FinancialCrimeRAGSystem:
     
    def query(self, question: str) -> str:
       """Main query method"""
+      lr_values = re.findall(r"lr-\d+", question.lower())
+      logger.info(f"RAG query has {lr_values} case numbers in the query '{question}'")
+
+      qdrant_filter = None
+      if lr_values:
+         qdrant_filter = filter_by_lr_number(lr_values)
+
       result = self.graph.invoke({
-          "query": question,
-          "context": [],
-          "response": ""
-      })
+            "query": question,
+            "context": [],
+            "response": "",
+            "filter": qdrant_filter
+         }
+      )
 
       return result["response"]
     
    def agent_query(self, question: str) -> str:
       """Query method for RAG Agent"""
+      lr_values = re.findall(r"lr-\d+", question.lower())
+      logger.info(f"Agentic RAG query has {lr_values} case numbers in the query '{question}'")
+
+      if lr_values:
+         self.current_filter = filter_by_lr_number(lr_values)
+
       inputs = {"messages": [HumanMessage(content=question)]}
       result = self.agent_graph.invoke(
          inputs
       )
-      return result["messages"][-1].content
+
+      answer = result["messages"][-1].content
+
+      tools_used = []
+      retrieved_docs = []
+      rag_query = ""
+
+      for msg in result["messages"]:
+         if hasattr(msg, 'tool_calls') and msg.tool_calls:
+            for tool_call in msg.tool_calls:
+               tool_name = tool_call.get("name", "")
+               tools_used.append(tool_name)
+
+               if tool_name == "search_sec_documents":
+                  args = tool_call.get('args', {})
+                  rag_query = (
+                        args.get('query') or 
+                        args.get('__arg1') or 
+                        args.get('input') or
+                        question
+                     )
+                  if self.current_filter:
+                     docs = self.last_retrieved_docs
+                  else:
+                     docs = self.retriever.invoke(rag_query)
+                  retrieved_docs.extend(docs)
+      
+      if retrieved_docs and 'search_sec_documents' in tools_used:
+         logger.info(f'Add citation to {question}')
+         answer = self._add_citations(answer, retrieved_docs)
+      
+      self.current_filter = None
+      self.last_retrieved_docs = []
+      
+      return {
+         "result": answer,
+         "tools_used": list(set(tools_used)),
+         "sources": retrieved_docs,
+         "rag_query": rag_query or '',
+      }
+   
+   def _add_citations(self, answer: str, docs: List[Document]) -> str:
+      """Add source citations to answer"""
+      citations = "\n\n---\n**Sources:**\n"
+      for i, doc in enumerate(docs, 1):
+         lr_no = doc.metadata.get('lr_no', 'Unknown')
+         url = doc.metadata.get('url', 'N/A')
+         title = doc.metadata.get('title', 'SEC Document')[:80]
+         query = doc.metadata.get('rag_query', '')
+         citations += f"{i}. [{lr_no}]({url}) {query} - {title}...\n"
+      
+      return answer + citations
+
+def filter_by_lr_number(lr_nos: List[str]) -> FieldCondition:
+   """Filter Qdrant using LR number"""
+   return Filter(
+            should=[
+                FieldCondition(
+                    key="metadata.lr_no",
+                    match=MatchValue(value=lr.upper())
+                )
+                for lr in lr_nos
+            ]
+        )
 
 if __name__ == "__main__":
    
@@ -236,21 +391,17 @@ if __name__ == "__main__":
    
    # uses sec_documents
    question = "What penalties were issued for insider trading in 2025?"
+   question = "What is LR-26161 about?" #"Who is Baris Cabalar? Check documents"
+
+   # answer = rag_system.query(question)
 
    # answer = rag_system.agent_query(question)
 
    # use Tavily
-   question = "What financial crime news happened this week?"
+   # question = "What financial crime news happened this week?"
 
    answer = rag_system.agent_query(question)
 
    logger.info(f"Question: {question}")
    logger.info(f"Answer: {answer}")
-
-   test_queries = [
-   "What is securities fraud and what are typical penalties?",
-   "What penalties were issued for insider trading in 2025?",
-   "Tell me about Ponzi scheme cases",
-   "What is the difference between securities fraud and wire fraud?",
-]
 
