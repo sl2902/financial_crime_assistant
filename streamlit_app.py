@@ -131,6 +131,8 @@ try:
         # Bar chart
         st.sidebar.subheader("Cost vs Latency Comparison")
         chart_df = comparison_df.set_index("Metric")[["Baseline", "Advanced"]]
+        chart_df["Advanced"] = chart_df["Advanced"] / chart_df["Baseline"]
+        chart_df["Baseline"] = chart_df["Baseline"] / chart_df["Baseline"]
         st.sidebar.bar_chart(chart_df, stack=False)
 
 
