@@ -76,7 +76,7 @@ try:
     st.sidebar.subheader("Baseline vs Advanced")
     
     # Create comparison
-    metrics = ["faithfulness", "answer_relevancy", "context_entity_recall", "context_recall", "noise_sensitivity"]
+    metrics = ["faithfulness", "factual_correctness", "answer_relevancy", "context_entity_recall", "context_recall", "noise_sensitivity"]
     # comparison_data = {
     #     "Metric": metrics,
     #     "Baseline": [eval_df[m].mean() 
