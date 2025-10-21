@@ -4,6 +4,7 @@ import pandas as pd
 from pathlib import Path
 import markdown2
 import time
+import atexit
 
 from src.ingestion.loader import QdrantStoreManager, vector_store_retriever as get_retriever
 from src.rag.retriever import FinancialCrimeRAGSystem
@@ -35,13 +36,24 @@ st.set_page_config(
     layout="wide"
 )
 
+@st.cache_resource
+def get_qdrant_client():
+    return QdrantStoreManager(path="./qdrant_data")
+
 # Initialize session state
 if 'rag_system' not in st.session_state:
     with st.spinner("Loading system..."):
-        store_manager = QdrantStoreManager(path="./qdrant_data")
+        store_manager = get_qdrant_client()
         retriever = get_retriever(store_manager, search_kwargs={"k": 5})
         st.session_state.rag_system = FinancialCrimeRAGSystem(retriever=retriever)
         st.session_state.messages = []
+
+@atexit.register
+def close_qdrant():
+    try:
+        store_manager.client.close()
+    except Exception:
+        pass
 
 # Sidebar - Evaluation Metrics and Settings
 st.sidebar.title("⚙️ Settings")
