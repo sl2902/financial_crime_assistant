@@ -22,3 +22,6 @@ dependencies = [
     "rapidfuzz==3.14.1",
     "streamlit==1.50.0",
 ]
+
+[tool.poetry.dependencies]
+python = ">=3.11,<4.0"
