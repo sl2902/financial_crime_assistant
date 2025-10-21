@@ -21,6 +21,7 @@ dependencies = [
     "langchain-tavily==0.2.1",
     "rapidfuzz==3.14.1",
     "streamlit==1.50.0",
+    "markdown2==2.5.4",
 ]
 
 [tool.poetry.dependencies]
