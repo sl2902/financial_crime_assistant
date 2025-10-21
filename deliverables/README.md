@@ -1,5 +1,7 @@
 # Task 1: Defining your Problem and Audience
 
+**Loom** https://www.loom.com/share/12abb58ed2d341dbbbee9307d4003b78?sid=085e8373-baec-42d5-a4b4-1391a401e03a
+
 #### ✅ Deliverables
 **Problem Statement**<br>
 Financial compliance officers and  KYC analysts spend excessive time manually reviewing news articles and public records
