@@ -2,14 +2,14 @@
 
 #### ✅ Deliverables
 **Problem Statement**<br>
-Financial compliance officers and  KYC analysts spend excessive time manuallyreviewing news articles nad public records
+Financial compliance officers and  KYC analysts spend excessive time manually reviewing news articles and public records
 to identify connections between entities involved in financial crimes, leading to delayed risk assessments and missed regulatory red flags
 
 **Why This is a Problem**<br>
 Financial institutions are legally bound to conduct Know Your Customer (KYC) and Enhanced Due Diligence (EDD) checks to prevent money laundering
 , terrorist fianancing, and other economic and financial crimes. Compliance teams must manually scan thousands of news articles, regulatory 
 annoucements, and internal and external records daily to identify adverse media mentions of their clients and counterparties. This process is
-extremely time-consuming and error-prone - a single analyst might spend 2-4 hours investigating a single entity's connections to potential
+extremely time-consuming and error-prone. A single analyst might spend 2-4 hours investigating a single entity's connections to potential
 criminal activity across dozens of disparate sources.<br>
 For example, Deutsche Bank was fined $130 million in 2020 for failing to detect Jeffrey Epstein's suspicious transactions, while Standard Chartered paid $1.1 billion in 2019 for inadequate AML controls that allowed transactions with sanctioned entities. In 2023, TD Bank received a $3 billion penalty - the largest AML fine in U.S. history - for systematically failing to monitor money laundering activities. Beyond fines, banks face regulatory restrictions: HSBC operated under a compliance monitor for five years following its $1.9 billion AML settlement, significantly impacting operations.<br>
 The consequences of missing critical information are severe: banks face regulatory fines averaging $2-5 billion annually for Anti-Money Laundering (AML)
@@ -26,7 +26,7 @@ following:
 - Risk assessment based on criminal network identification
 - Regulatory reporting preparation
 
-Some common queries  my user is likely to ask are:
+Some common queries my user is likely to ask are:
 
 **Case Information Queries:**
 
@@ -53,10 +53,10 @@ Some common queries  my user is likely to ask are:
 # Task 2: Propose a Solution
 
 **The Better World for KYC Analysts:**<br>
-Today, KYC analysts at financial institutions spend 2-4 hours per client conducting Enhanced Due Diligence (EDD), manually sifting through dozens of news sources, regulatory databases, and enforcement records to identify red flags. A single missed connection to a sanctioned entity can result in multi-million dollar fines and reputational damage, yet the volume of information makes thorough screening nearly impossible at scale.  my Financial Crime Compliance Assistant transforms this reality: what once took hours now takes seconds. Analysts simply ask natural language questions and receive comprehensive, properly cited answers that connect the dots across hundreds of enforcement cases automatically. This means a compliance team that previously screened 10 high-risk clients per day can now handle 50, reducing onboarding times from weeks to days while maintaining—and actually improving—the quality of risk assessment. The financial impact is immediate: faster client onboarding drives revenue growth, while superior screening reduces regulatory risk and potential fines.
+Today, KYC analysts at financial institutions spend 2-4 hours per client conducting Enhanced Due Diligence (EDD), manually sifting through dozens of news sources, regulatory databases, and enforcement records to identify red flags. A single missed connection to a sanctioned entity can result in multi-million dollar fines and reputational damage, yet the volume of information makes thorough screening nearly impossible at scale. My Financial Crime Compliance Assistant transforms this reality: what once took hours now takes seconds. Analysts simply ask natural language questions and receive comprehensive, properly cited answers that connect the dots across hundreds of enforcement cases automatically. This means a compliance team that previously screened 10 high-risk clients per day can now handle 50, reducing onboarding times from weeks to days while maintaining—and actually improving—the quality of risk assessment. The financial impact is immediate: faster client onboarding drives revenue growth, while superior screening reduces regulatory risk and potential fines.
 
 **How the System Works:**<br>
-The system employs a ReAct agentic architecture where an intelligent reasoning agent has access to two specialized tools and decides which to use based on the analyst's query. When asked about historical case precedents or typical penalties, the agent invokes the RAG tool to search our curated database of SEC enforcement documents, retrieving relevant cases with precise citations to litigation release numbers, amounts, dates, location and outcomes. For questions about current events or recent regulatory changes, the agent selects the web search tool (Tavily) to query the internet for up-to-date information. The agent makes these decisions seamlessly through agentic reasoning—analysts never need to specify which data source to use; they simply ask their question in plain English and the agent determines the best approach. Every response includes clear citations enabling analysts to verify details and build audit trails for regulatory compliance. Deployed locally via Docker, the system ensures sensitive client data never leaves the institution's secure environment while delivering sub-second response times that keep analysts productive.
+The system employs a ReAct agentic architecture where an intelligent reasoning agent has access to two specialized tools and decides which to use based on the analyst's query. When asked about historical case precedents or typical penalties, the agent invokes the RAG tool to search our curated database of SEC enforcement documents, retrieving relevant cases with precise citations to litigation release numbers, amounts, dates, location and outcomes. For questions about current events or recent regulatory changes, the agent selects the web search tool (Tavily) to query the internet for up-to-date information. The agent makes these decisions seamlessly through agentic reasoning; the analysts never need to specify which data source to use; they simply ask their question in plain English and the agent determines the best approach. Every response includes clear citations enabling analysts to verify details and build audit trails for regulatory compliance. Deployed locally (could use Docker), the system ensures sensitive client data never leaves the institution's secure environment while delivering sub 15 seconds response times that keep analysts productive.
 
 **Technical Stack & Tooling Choices:**<br>
 **LLM:**<br>
@@ -146,26 +146,26 @@ Query -> Retriever -> Generate -> Result
 | **Noise Sensitivity**    | 0.383     | Measures robustness to irrelevant information *(lower is better)*               |
 
 **Performance Metrics:**
-- Latency: 1,037 seconds (17.3 minutes for 20 testset queries)
-- Cost: $1.33
-- Total Tokens: 1,766,688
-- Avg Time per Query: 53 seconds
+- Latency: 1,035 seconds (17.3 minutes for 20 testset queries)
+- Cost: $1.48
+- Total Tokens: 1,915,145
+- Avg Time per Query: 52 seconds
 
 ## 2. Conclusions About Pipeline Performance<br>
 **Strengths:**
 
 - High Faithfulness (0.919): The system generates answers that are highly consistent with the retrieved SEC documents, which is critical for compliance use cases where accuracy is paramount.
-- Strong Answer Relevancy (0.910): The RAG pipeline produces answers that directly address analyst queries, demonstrating good alignment between retrieval and generation.
-- Reasonable Context Recall (0.733): The system retrieves about 73% of relevant information needed to answer queries, providing adequate coverage for most questions.
+- Strong Answer Relevancy (0.858): The RAG pipeline produces answers that directly address analyst queries, demonstrating good alignment between retrieval and generation.
+- Reasonable Context Recall (0.725): The system retrieves about 73% of relevant information needed to answer queries, providing adequate coverage for most questions.
 
 **Areas for Improvement:**
 
-- Moderate Factual Correctness (0.610): While answers are faithful to retrieved context, factual accuracy could be improved, suggesting the need for better retrieval quality to ensure correct source documents are retrieved.
-- Low Context Entity Recall (0.511): Only 51% of relevant entities (people, organizations, amounts) are captured, indicating that important compliance details may be missed. This is problematic for KYC analysts who need comprehensive entity information.
-- High Noise Sensitivity (0.465): The system's performance degrades moderately when irrelevant documents are in the context, suggesting a need for better document filtering or reranking.
+- Moderate Factual Correctness (0.623): While answers are faithful to retrieved context, factual accuracy could be improved, suggesting the need for better retrieval quality to ensure correct source documents are retrieved.
+- Low Context Entity Recall (0.522): Only 52% of relevant entities (people, organizations, amounts) are captured, indicating that important compliance details may be missed. This is problematic for KYC analysts who need comprehensive entity information.
+- High Noise Sensitivity (0.383): The system's performance degrades moderately when irrelevant documents are in the context, suggesting a need for better document filtering or reranking.
 
 **Overall Assessment:**<br>
-The baseline RAG pipeline demonstrates strong semantic understanding and answer generation capabilities (faithfulness and relevancy both >0.9), but struggles with retrieving comprehensive factual details (entity recall ~0.5) and is moderately sensitive to noise. For production deployment in financial compliance, improvements are needed in retrieval precision to capture all relevant entities and reduce noise sensitivity.
+The baseline RAG pipeline demonstrates strong semantic understanding and answer generation capabilities (faithfulness and relevancy both >0.86), but struggles with retrieving comprehensive factual details (entity recall ~0.5) and is moderately sensitive to noise. For production deployment in financial compliance, improvements are needed in retrieval precision to capture all relevant entities and reduce noise sensitivity.
 
 # Task 6: The Benefits of Advanced Retrieval:<br>
 
@@ -199,7 +199,7 @@ Preprocessing Enhancements:<br>
 | Context Recall             | 0.725          | 0.733                           | +0.008    | +1.1% ✅     |
 | Context Entity Recall      | 0.522          | 0.532                           | +0.010    | +1.9% ✅     |
 | Noise Sensitivity          | 0.383          | 0.352                           | -0.031    | -8.1% ✅     |
-| Latency (seconds)          | 1,037          | 939                             | -98       | -9.5% ✅     |
+| Latency (seconds)          | 1,035          | 937                             | -98       | -9.5% ✅     |
 | Cost (USD)                 | $1.48          | $1.16                           | -$0.32    | -21.6% ✅    |
 | Total Tokens               | 1,915,145      | 1,449,985                       | -465,160  | -24.3% ✅    |
 
