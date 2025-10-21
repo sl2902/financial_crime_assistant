@@ -122,3 +122,124 @@ SEC documents provide authoritative historical precedents and detailed case info
 - Token-based length function: Uses tiktoken to count tokens accurately for the embedding model, preventing chunks from exceeding embedding limits while maximizing information density.
 
 This approach balances retrieval precision (smaller chunks = more focused matching) with contextual completeness (larger chunks = better understanding of case narratives), which is critical for compliance queries where missing context could lead to incorrect risk assessments.
+
+# Task 4: Building an End-to-End Agentic RAG Prototype:<br>
+
+**Plain RAG**<br>
+Query -> Retriever -> Generate -> Result
+
+![Plain RAG](assets/plain_rag.png)
+
+**Agentic RAG**<br>
+
+![Agentic RAG arch](assets/agentic_rag_architecture.png)
+
+![Agentic RAG](assets/agentic_rag.png)
+
+# Task 5: Creating a Golden Test Data Set:<br>
+
+| **Metric**               | **Score** | **Description**                                                                 |
+|--------------------------|-----------|---------------------------------------------------------------------------------|
+| **Faithfulness**         | 0.922     | Measures if the answer is factually consistent with the retrieved context       |
+| **Factual Correctness**  | 0.623     | Evaluates factual accuracy of the generated answer                              |
+| **Answer Relevancy**     | 0.858     | Assesses how relevant the answer is to the question                             |
+| **Context Recall**       | 0.725     | Measures if all relevant information was retrieved                              |
+| **Context Entity Recall**| 0.522     | Evaluates if all relevant entities were captured                                |
+| **Noise Sensitivity**    | 0.383     | Measures robustness to irrelevant information *(lower is better)*               |
+
+**Performance Metrics:**
+- Latency: 1,037 seconds (17.3 minutes for 20 testset queries)
+- Cost: $1.33
+- Total Tokens: 1,766,688
+- Avg Time per Query: 53 seconds
+
+## 2. Conclusions About Pipeline Performance<br>
+**Strengths:**
+
+- High Faithfulness (0.919): The system generates answers that are highly consistent with the retrieved SEC documents, which is critical for compliance use cases where accuracy is paramount.
+- Strong Answer Relevancy (0.910): The RAG pipeline produces answers that directly address analyst queries, demonstrating good alignment between retrieval and generation.
+- Reasonable Context Recall (0.733): The system retrieves about 73% of relevant information needed to answer queries, providing adequate coverage for most questions.
+
+**Areas for Improvement:**
+
+- Moderate Factual Correctness (0.610): While answers are faithful to retrieved context, factual accuracy could be improved, suggesting the need for better retrieval quality to ensure correct source documents are retrieved.
+- Low Context Entity Recall (0.511): Only 51% of relevant entities (people, organizations, amounts) are captured, indicating that important compliance details may be missed. This is problematic for KYC analysts who need comprehensive entity information.
+- High Noise Sensitivity (0.465): The system's performance degrades moderately when irrelevant documents are in the context, suggesting a need for better document filtering or reranking.
+
+**Overall Assessment:**<br>
+The baseline RAG pipeline demonstrates strong semantic understanding and answer generation capabilities (faithfulness and relevancy both >0.9), but struggles with retrieving comprehensive factual details (entity recall ~0.5) and is moderately sensitive to noise. For production deployment in financial compliance, improvements are needed in retrieval precision to capture all relevant entities and reduce noise sensitivity.
+
+# Task 6: The Benefits of Advanced Retrieval:<br>
+
+**1. Planned Retrieval Techniques**<br>
+Contextual Compression with Cohere Reranking<br>
+- Description: Retrieve a larger set of candidate documents (k=10) from the vector store, then use Cohere's reranking model to identify and keep only the most relevant chunks (top_n=5) based on semantic similarity to the query.<br>
+- Why this technique is useful: Financial crime documents often contain extensive legal boilerplate and procedural information that can dilute the quality of retrieved context; reranking filters out this noise to surface only the most relevant passages about penalties, charges, and case outcomes that KYC analysts need, reducing hallucination risk and improving answer precision.
+
+**2. Implementation Details**
+Preprocessing Enhancements:<br>
+
+- Unicode Normalization: Cleaned smart quotes, em dashes, and control characters to ensure consistent text representation
+- Navigation Removal: Stripped SEC.gov boilerplate (headers, footers, navigation menus) that added noise to embeddings
+- Metadata Enrichment: Prepended case number, title, date, and crime type to chunk content to improve retrieval by LR number and entity names
+- Crime Type Categorization: Automatically tagged documents with crime types (Ponzi Scheme, Insider Trading, Securities Fraud, etc.) for better filtering
+
+**Retrieval Configuration:**
+
+- Base Retrieval: k=10
+- Reranker Model: Cohere rerank-english-v3.5
+- Top N After Reranking: 5 (aggressive filtering)
+- Chunk Size: 750 tokens with 100 token overlap
+
+# Task 7: Assessing Performance<br>
+
+| Metric                     | Baseline (k=10) | Contextual Compression (k=10→5) | Change    | Improvement |
+|----------------------------|----------------|---------------------------------|-----------|--------------|
+| Faithfulness               | 0.922          | 0.925                           | +0.003    | +0.4% ✅     |
+| Factual Correctness        | 0.623          | 0.636                           | +0.013    | +2.1% ✅     |
+| Answer Relevancy           | 0.858          | 0.820                           | -0.038    | -4.4% ⚠️     |
+| Context Recall             | 0.725          | 0.733                           | +0.008    | +1.1% ✅     |
+| Context Entity Recall      | 0.522          | 0.532                           | +0.010    | +1.9% ✅     |
+| Noise Sensitivity          | 0.383          | 0.352                           | -0.031    | -8.1% ✅     |
+| Latency (seconds)          | 1,037          | 939                             | -98       | -9.5% ✅     |
+| Cost (USD)                 | $1.48          | $1.16                           | -$0.32    | -21.6% ✅    |
+| Total Tokens               | 1,915,145      | 1,449,985                       | -465,160  | -24.3% ✅    |
+
+**Recommendation:**<br>
+The advanced retrieval system is superior for production use due to dramatic improvements in noise handling, speed, and cost, while maintaining high faithfulness (0.925). The answer relevancy trade-off can be addressed by tuning the reranker's top_n parameter (testing 7-10 instead of 5) to retain more context for complex queries. Latency could be improved by shifting from local Qdrant to cloud, and using indexing to improve performance.
+
+**2. Planned Improvements for Second Half of Course**<br>
+Following improvements will be decided based on availability of time<br>
+**Retrieval Enhancements:**
+
+- Hybrid Search (BM25 + Semantic): Combine keyword matching with semantic search to improve retrieval of exact entity names, LR numbers, and monetary amounts that semantic search alone may miss. This addresses the entity recall challenge observed in evaluation.
+- Query Expansion with LLM: Use the LLM to generate alternative phrasings of analyst queries before retrieval (e.g., "insider trading penalties" -> ["insider trading fines", "illegal trading sanctions", "tipper-tippee violations"]) to improve recall for domain-specific terminology.
+- Adaptive Top-K: Implement query-specific retrieval parameters where simple factual queries use smaller k (5-7 chunks) while complex analytical queries use larger k (15-20 chunks) to balance precision and coverage based on question complexity.
+
+**Agentic Improvements:**
+
+- Multi-Step Reasoning: Enhance the agent to break down complex queries into sub-questions, allowing it to perform focused retrievals for each aspect (e.g., "Compare penalties for Ponzi schemes vs. insider trading" -> first retrieve Ponzi cases, then insider trading cases, then compare).
+- Entity Extraction & Knowledge Graph: Build a knowledge graph of entities (people, companies, cases) extracted from SEC documents to enable relationship queries like "Show all cases involving individuals connected to Company X" without relying solely on vector similarity.
+- Query Routing with Confidence Scores: Add a classification layer that routes queries to different retrieval strategies based on query type: exact lookup (LR numbers) -> metadata filtering, conceptual questions -> semantic search, recent news -> web search tool.
+
+**Evaluation & Monitoring:**
+
+- Production Metrics Dashboard: Implement real-time tracking of retrieval quality using LangSmith, monitoring answer relevancy, latency, and cost per query to detect performance degradation and enable A/B testing of retrieval configurations.
+- User Feedback Loop: Collect thumbs up/down ratings from KYC analysts with optional corrections to create a human-labeled evaluation dataset, enabling continuous improvement through RLHF-style fine-tuning or prompt optimization.
+- Automated Regression Testing: Expand the synthetic test set to 50+ questions covering edge cases (multi-entity queries, date ranges, comparative analysis) and set up CI/CD pipelines to evaluate every system change against this benchmark before deployment.
+
+**User Experience:**
+
+- Streaming Responses: Implement token streaming for the agentic RAG system to provide real-time feedback during long queries, improving perceived responsiveness for analysts.
+- Source Highlighting: Add visual highlighting in retrieved documents to show which specific sentences supported each claim in the generated answer, building trust and enabling rapid verification.
+- Case Relationship Visualization: Create interactive visualizations showing connections between related cases, shared defendants, and penalty patterns to help analysts identify trends beyond individual document lookup.
+
+
+Priority Order for Demo Day:
+
+- Hybrid search (biggest potential impact on recall)
+- Adaptive top-k (addresses answer relevancy issue)
+- Multi-step reasoning (showcases agentic capabilities)
+- Production metrics dashboard (demonstrates enterprise readiness)
+
+
