@@ -261,7 +261,7 @@ if st.session_state.messages:
                 if rag_query:
                     st.markdown(f"Query: {rag_query}")
                 st.markdown(f"[View on SEC.gov]({url})")
-                st.markdown(doc.page_content[:100] + "...")
+                st.markdown(doc.page_content[:200] + "...")
                 st.divider()
     
     # Show conversation history
