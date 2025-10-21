@@ -1,0 +1,55 @@
+version: '3.8'
+
+services:
+  financial-crime-assistant:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: financial-crime-assistant
+    ports:
+      - "8501:8501"
+    environment:
+      # OpenAI Configuration
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      
+      # Optional: Tavily for web search (Agentic RAG)
+      - TAVILY_API_KEY=${TAVILY_API_KEY:-}
+      
+      # Optional: Cohere for reranking
+      - COHERE_API_KEY=${COHERE_API_KEY:-}
+      
+      # Optional: LangSmith for monitoring
+      - LANGCHAIN_TRACING_V2=${LANGCHAIN_TRACING_V2:-false}
+      - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY:-}
+      - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-Financial-Crimes-Assistant}
+      - LANGSMITH_ENDPOINT=https://api.smith.langchain.com
+      
+      # Application settings
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # Mount Qdrant data for persistence
+      - qdrant_data:/app/qdrant_data
+      
+      # Mount evaluation results (optional)
+      - ./evaluation:/app/evaluation
+      
+      # Mount deliverables (optional, for viewing architecture diagrams)
+      - ./deliverables:/app/deliverables
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - financial-crime-net
+
+volumes:
+  qdrant_data:
+    driver: local
+
+networks:
+  financial-crime-net:
+    driver: bridge
+
