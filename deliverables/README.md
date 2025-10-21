@@ -51,7 +51,6 @@ Some common queries  my user is likely to ask are:
 10. "What are recent SEC enforcement actions in 2025?"
 
 # Task 2: Propose a Solution
-#### ✅ Deliverables
 
 **The Better World for KYC Analysts:**<br>
 Today, KYC analysts at financial institutions spend 2-4 hours per client conducting Enhanced Due Diligence (EDD), manually sifting through dozens of news sources, regulatory databases, and enforcement records to identify red flags. A single missed connection to a sanctioned entity can result in multi-million dollar fines and reputational damage, yet the volume of information makes thorough screening nearly impossible at scale.  my Financial Crime Compliance Assistant transforms this reality: what once took hours now takes seconds. Analysts simply ask natural language questions and receive comprehensive, properly cited answers that connect the dots across hundreds of enforcement cases automatically. This means a compliance team that previously screened 10 high-risk clients per day can now handle 50, reducing onboarding times from weeks to days while maintaining—and actually improving—the quality of risk assessment. The financial impact is immediate: faster client onboarding drives revenue growth, while superior screening reduces regulatory risk and potential fines.
@@ -100,7 +99,6 @@ The system features a single reasoning agent equipped with two specialized tools
 This agentic approach enables the system to handle diverse query types—from specific case lookups ("What was the penalty in LR-26415?") to comparative analysis ("How do Ponzi scheme penalties compare to insider trading?") to current event monitoring ("What financial crime news happened this week?")—all through a single natural language interface that automatically adapts to the analyst's information needs.
 
 # Task 3: Dealing with the Data
-#### ✅ Deliverables
 
 ## 1. Data Sources & External APIs:
 **Primary Data Source (RAG):**<br>
