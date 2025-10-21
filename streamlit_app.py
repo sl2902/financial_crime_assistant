@@ -3,6 +3,7 @@ import streamlit as st
 import pandas as pd
 from pathlib import Path
 import markdown2
+import time
 
 from src.ingestion.loader import QdrantStoreManager, vector_store_retriever as get_retriever
 from src.rag.retriever import FinancialCrimeRAGSystem
@@ -75,7 +76,7 @@ try:
     st.sidebar.subheader("Baseline vs Advanced")
     
     # Create comparison
-    metrics = ["faithfulness", "answer_relevancy", "context_entity_recall", "context_recall"]
+    metrics = ["faithfulness", "answer_relevancy", "context_entity_recall", "context_recall", "noise_sensitivity"]
     # comparison_data = {
     #     "Metric": metrics,
     #     "Baseline": [eval_df[m].mean() 
@@ -108,6 +109,30 @@ try:
         st.sidebar.subheader("Performance Comparison")
         chart_df = comparison_df.set_index("Metric")[["Baseline", "Advanced"]]
         st.sidebar.bar_chart(chart_df, stack=False)
+
+        # Cost vs Latency performance
+        metrics = ["langsmith_total_cost_usd", "langsmith_total_latency"]
+        comparison_df = eval_df.T[1:][eval_df.T[1:].index.isin(metrics)].rename(columns={0:"Baseline", 1: "Advanced"})
+        comparison_df = comparison_df.reset_index().rename(columns={"index": "Metric"})
+        comparison_df["Baseline"] = comparison_df["Baseline"].astype(float)
+        comparison_df["Advanced"] = comparison_df["Advanced"].astype(float)
+        if any(comparison_df["Baseline"]) and any(comparison_df["Advanced"]):
+            comparison_df["Improvement"] = ((comparison_df["Advanced"] - comparison_df["Baseline"]) / comparison_df["Baseline"] * 100).round(1)
+            
+            st.sidebar.dataframe(
+                comparison_df.style.format({
+                    "Baseline": "{:.3f}",
+                    "Advanced": "{:.3f}",
+                    "Improvement": "{:+.1f}%"
+                }),
+                hide_index=True
+            )
+        
+        # Bar chart
+        st.sidebar.subheader("Cost vs Latency Comparison")
+        chart_df = comparison_df.set_index("Metric")[["Baseline", "Advanced"]]
+        st.sidebar.bar_chart(chart_df, stack=False)
+
 
 except FileNotFoundError:
     st.sidebar.warning("Evaluation results not found. Run evaluation first.")
@@ -154,12 +179,14 @@ query = st.text_input(
 )
 
 # Query button with mode indicator
+execution_time = None
 button_text = f"Submit ({rag_mode})"
 if st.button(button_text, type="primary") or (query and len(st.session_state.messages) == 0):
     if query:
         with st.spinner(f"{'Searching documents...' if rag_mode == 'Plain RAG' else 'Searching documents and web...'}"):
             # Call appropriate method based on mode
             try:
+                start = time.time()
                 if rag_mode == "Plain RAG":
                     # Use plain RAG (document retrieval only)
                     response = st.session_state.rag_system.query(query)
@@ -177,10 +204,11 @@ if st.button(button_text, type="primary") or (query and len(st.session_state.mes
                     "answer": response,
                     "mode": rag_mode
                 })
-                
+                end = time.time()  
             except Exception as e:
                 st.error(f"Error: {str(e)}")
                 st.info("Try switching RAG modes or rephrasing your question.")
+        execution_time = end - start
 
 # Display conversation history
 if st.session_state.messages:
@@ -213,9 +241,12 @@ if st.session_state.messages:
     custom_success(html)
 
     result = latest["answer"]
-    if isinstance(result, dict) and result.get("tools_used"):
-        st.caption(f"🔧 Tools: {', '.join(result['tools_used'])}")
+    if isinstance(result, dict) and result.get("tools_used") and execution_time:
+        st.caption(f"🔧 Tools: {', '.join(result['tools_used'])} 🕒 Execution Time: {round(execution_time, 2)} seconds")
         st.write(f'Number of sources {len(result.get("sources"))}')
+    else:
+        if execution_time:
+            st.caption(f"🕒 Execution Time: {round(execution_time, 2)} seconds")
     # Show sources (expandable)
     if isinstance(result, dict) and result.get("sources"):
         with st.expander("📚 View Sources"):
