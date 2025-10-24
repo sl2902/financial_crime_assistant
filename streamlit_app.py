@@ -44,7 +44,7 @@ def get_qdrant_client():
 if 'rag_system' not in st.session_state:
     with st.spinner("Loading system..."):
         store_manager = get_qdrant_client()
-        retriever = get_retriever(store_manager, search_kwargs={"k": 5})
+        retriever = get_retriever(store_manager, search_kwargs={"k": 3})
         st.session_state.rag_system = FinancialCrimeRAGSystem(retriever=retriever)
         st.session_state.messages = []
 
@@ -257,26 +257,26 @@ if st.session_state.messages:
     result = latest["answer"]
     if isinstance(result, dict) and result.get("tools_used") and execution_time:
         st.caption(f"🔧 Tools: {', '.join(result['tools_used'])} 🕒 Execution Time: {round(execution_time, 2)} seconds")
-        st.write(f'Number of sources {len(result.get("sources"))}')
+        # st.write(f'Number of sources {len(result.get("sources"))}')
     else:
         if execution_time:
             st.caption(f"🕒 Execution Time: {round(execution_time, 2)} seconds")
-    # Show sources (expandable)
-    if isinstance(result, dict) and result.get("sources"):
-        with st.expander("📚 View Sources"):
-            for i, doc in enumerate(result["sources"], 1):
-                lr_no = doc.metadata.get('lr_no', 'Unknown')
-                url = doc.metadata.get('url', 'N/A')
-                date = doc.metadata.get('date', 'N/A')
-                crime = ', '.join(doc.metadata.get('crime_type', []))
+    # # Show sources (expandable)
+    # if isinstance(result, dict) and result.get("sources"):
+    #     with st.expander("📚 View Sources"):
+    #         for i, doc in enumerate(result["sources"], 1):
+    #             lr_no = doc.metadata.get('lr_no', 'Unknown')
+    #             url = doc.metadata.get('url', 'N/A')
+    #             date = doc.metadata.get('date', 'N/A')
+    #             crime = ', '.join(doc.metadata.get('crime_type', []))
                 
-                st.markdown(f"**{i}. {lr_no}** ({date})")
-                st.markdown(f"Crime Type: {crime}")
-                if rag_query:
-                    st.markdown(f"Query: {rag_query}")
-                st.markdown(f"[View on SEC.gov]({url})")
-                st.markdown(doc.page_content[:200] + "...")
-                st.divider()
+    #             st.markdown(f"**{i}. {lr_no}** ({date})")
+    #             st.markdown(f"Crime Type: {crime}")
+    #             if rag_query:
+    #                 st.markdown(f"Query: {rag_query}")
+    #             st.markdown(f"[View on SEC.gov]({url})")
+    #             st.markdown(doc.page_content[:200] + "...")
+    #             st.divider()
     
     # Show conversation history
     if len(st.session_state.messages) > 1:

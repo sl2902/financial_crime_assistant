@@ -118,19 +118,19 @@ def vector_store_retriever(vector_store_manager: QdrantVectorStore, search_kwarg
 
     return vector_store.as_retriever(search_kwargs=search_kwargs)
 
-def test_loader(query: str) -> None:
+def test_loader(collection_name: str, query: str) -> None:
     """Test loader"""
     processed_filepath = "data/processed/"
     vector_store_manager = QdrantStoreManager(path=qdrant_filepath)
-    if vector_store_manager.get_client().collection_exists():
+    if vector_store_manager.client.collection_exists(collection_name):
         retriever = vector_store_retriever(vector_store_manager)
         docs = retriever.invoke(query)
-
-        # Check first retrieved chunk
-        print("=== CHUNK CONTENT ===")
-        print(docs[0].page_content)
-        print("\n=== METADATA ===")
-        print(docs[0].metadata)
+        if docs:
+            # Check first retrieved chunk
+            print("=== CHUNK CONTENT ===")
+            print(docs[0].page_content)
+            print("\n=== METADATA ===")
+            print(docs[0].metadata)
 
 def main():
 
@@ -159,8 +159,8 @@ def main():
         logger.info(f"Chunking documents for batch {batch_file}...")
         chunks = recursive_chunking(releases, chunk_size=750, chunk_overlap=100)
 
-    #     logger.info("Loading to Qdrant...")
-    #     load_to_qdrant(chunks, vector_store_manager)
+        logger.info("Loading to Qdrant...")
+        load_to_qdrant(chunks, vector_store_manager)
     # all_docs = []
     # for file in glob.glob(f"{processed_filepath}/*_clean.json"):
     #     logger.info(f"Loading {file}")
@@ -184,14 +184,15 @@ def main():
 
     # logger.info(answer)
 
-    results = vector_store_manager.search_by_lr_number('LR-26115')
+    case = 'LR-26115'
+    results = vector_store_manager.search_by_lr_number(case)
     if results[0]:
-        logger.info("LR-26415 is in Qdrant")
+        logger.info(f"{case} is in Qdrant")
         logger.info(f"Title: {results[0][0].payload.get('metadata').get('title')}")
     else:
-        logger.warning("LR-26161 NOT in Qdrant - needs to be ingested!")
+        logger.warning(f"{case} NOT in Qdrant - needs to be ingested!")
 
 
 if __name__ == "__main__":
     main()
-    # test_loader("Robert Allen Stanford penalties")
+    # test_loader("financial_crimes", "Robert Allen Stanford penalties")
