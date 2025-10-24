@@ -2,7 +2,7 @@
 import os
 import re
 import json
-from typing import Any, List, Dict, Tuple
+from typing import Any, List, Dict, Tuple, Optional
 from dotenv import load_dotenv
 from typing_extensions import TypedDict, Annotated
 from loguru import logger
@@ -24,7 +24,13 @@ from langgraph.graph import START, StateGraph, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 
-from qdrant_client.models import Filter, FieldCondition, MatchValue
+from qdrant_client.models import (
+    Filter, 
+    FieldCondition, 
+    MatchValue, 
+    MatchAny, 
+    Range
+)
 
 from src.ingestion.loader import QdrantStoreManager, vector_store_retriever
 from src.schemas.rag_schemas import(
@@ -72,6 +78,7 @@ class State(TypedDict):
   context: List[Document]
   response: str
   filter: Any
+  limit: int
 
 class AgentState(TypedDict):
   messages: Annotated[list, add_messages]
@@ -111,6 +118,7 @@ class FinancialCrimeRAGSystem:
                limit=search_k,
                with_payload=True
             )
+            logger.info(f"Number of filtered results for `Agentic RAG` {len(results)}")
             self.last_retrieved_docs = [
                Document(
                   page_content=point.payload.get("page_content", ""),
@@ -142,7 +150,13 @@ class FinancialCrimeRAGSystem:
       self.rag_tool = Tool(
          name="search_sec_documents",
          func=search_sec_documents,
-         description="Search SEC enforcement documents about financial crimes"
+         description="""Search SEC enforcement documents about financial crimes
+         Use this tool for ANY questions about:
+         - Penalties, fines, disgorgement amounts
+         - Financial crime cases and enforcement actions
+         - Historical SEC cases and outcomes
+         - Specific case details by crime type or date
+         Always use this tool unless the query explicitly asks for current news."""
       )
       self.tool_belt = [self.tavily_search_tool, self.rag_tool]
       self.llm_bind_tool = self.llm.bind_tools(self.tool_belt)
@@ -154,6 +168,7 @@ class FinancialCrimeRAGSystem:
       """Retrieve chunks from Qdrant Vector Store"""
       qdrant_filter = state.get("filter")
       query = state.get("query")
+      limit = state.get("limit")
    
       if qdrant_filter:
          logger.info("USING FILTER SEARCH")
@@ -168,7 +183,7 @@ class FinancialCrimeRAGSystem:
                query=query_embedding,
                query_filter=qdrant_filter,
                with_payload=True,
-               limit=5
+               limit=limit
          )
 
          retrieved_docs = []
@@ -184,7 +199,7 @@ class FinancialCrimeRAGSystem:
                metadata = payload.get("metadata", {})
                
                # Log for debugging
-               logger.info(f"Doc lr_no: {metadata.get('lr_no')}, content length: {len(page_content)}")
+               logger.info(f"Doc lr_no: {metadata.get('lr_no')}, Penalty category: {metadata.get('penalty_category')}, content length: {len(page_content)}")
                
                if page_content:  # Only add if we have content
                   doc = Document(
@@ -198,7 +213,7 @@ class FinancialCrimeRAGSystem:
          logger.info(f"Filter search returned {len(results.points)} results")
       else:
          logger.info("USING NORMAL SEARCH")
-         retrieved_docs = self.retriever.invoke(query)
+         retrieved_docs = self.retriever.invoke(query)[:limit]
       
       return {
             "context": retrieved_docs
@@ -338,7 +353,7 @@ class FinancialCrimeRAGSystem:
     
     #     return final_response
     
-   def query(self, question: str) -> str:
+   def query(self, question: str, filter: List[FieldCondition] = None, limit: int = 3) -> str:
       """Main query method"""
       lr_values = re.findall(r"lr-\d+", question.lower())
       logger.info(f"RAG query has {lr_values} case numbers in the query '{question}'")
@@ -346,24 +361,54 @@ class FinancialCrimeRAGSystem:
       qdrant_filter = None
       if lr_values:
          qdrant_filter = filter_by_lr_number(lr_values)
+      
+      if filter:
+         logger.info(f"Applying `Plain RAG` filter")
+      
+      combined_filter = None
+      if qdrant_filter and filter:
+         combined_filter = qdrant_filter + filter
+      elif qdrant_filter:
+         combined_filter = qdrant_filter
+      else:
+         combined_filter = filter
+      
+      logger.info(f"Overall filter condition being applied to `Plain RAG` {combined_filter}")
 
       result = self.graph.invoke({
             "query": question,
             "context": [],
             "response": "",
-            "filter": qdrant_filter
+            "filter": combined_filter,
+            "limit": limit
          }
       )
 
       return result["response"]
     
-   def agent_query(self, question: str) -> dict:
+   def agent_query(self, question: str, filter: Filter = None) -> dict:
       """Query method for RAG Agent"""
       lr_values = re.findall(r"lr-\d+", question.lower())
       logger.info(f"Agentic RAG query has {lr_values} case numbers in the query '{question}'")
 
+      lr_filter, metadata_filter = None, None
       if lr_values:
-         self.current_filter = filter_by_lr_number(lr_values)
+         lr_filter = filter_by_lr_number(lr_values)
+      
+      if filter:
+         metadata_filter = filter
+         logger.info(f"Applying `Agentic RAG` filter {metadata_filter}")
+      
+      combined_filter = None
+      if lr_filter and metadata_filter:
+         combined_filter = lr_filter + metadata_filter
+      elif lr_filter:
+         combined_filter = lr_filter
+      else:
+         combined_filter = metadata_filter
+      
+      self.current_filter = combined_filter
+      logger.debug(f'Is current filter set? {self.current_filter}')
 
       inputs = {"messages": [HumanMessage(content=question)]}
       result = self.agent_graph.invoke(inputs)
@@ -486,6 +531,49 @@ def filter_by_lr_number(lr_nos: List[str]) -> FieldCondition:
                 for lr in lr_nos
             ]
         )
+
+def extract_filters(question: str) -> Optional[Filter | None]:
+   """Extract filter criteria from question"""
+   conditions = []
+   
+   # LR number filter
+   lr_values = re.findall(r"lr-\d+", question.lower())
+   if lr_values:
+      conditions.extend([
+         FieldCondition(key="metadata.lr_no", match=MatchValue(value=lr.upper()))
+         for lr in lr_values
+      ])
+   
+   # Crime type filter
+   crime_types = {
+      "ponzi": "Ponzi Scheme",
+      "insider trading": "Insider Trading",
+      "securities fraud": "Securities Fraud",
+      "market manipulation": "Market Manipulation"
+   }
+   for keyword, crime_type in crime_types.items():
+      if keyword in question.lower():
+         conditions.append(
+               FieldCondition(key="metadata.crime_type", match=MatchValue(value=crime_type))
+         )
+   
+   # Date range filter
+   year_match = re.search(r"\b(202[3-5])\b", question)
+   if year_match:
+      year = year_match.group(1)
+      conditions.append(
+         FieldCondition(
+               key="metadata.date",
+               range=Range(
+                  gte=f"{year}-01-01",
+                  lte=f"{year}-12-31"
+               )
+         )
+      )
+   
+   if conditions:
+      return Filter(should=conditions) if len(conditions) == 1 else Filter(must=conditions)
+   return None
 
 if __name__ == "__main__":
    
