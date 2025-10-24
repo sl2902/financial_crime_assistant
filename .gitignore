@@ -11,3 +11,7 @@ uv.lock
 # data
 data
 NOTES
+
+# files
+*.csv
+*.jsonl
