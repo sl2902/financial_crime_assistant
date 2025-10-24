@@ -4,7 +4,18 @@ import pandas as pd
 from pathlib import Path
 import markdown2
 import time
+from datetime import datetime
 import atexit
+from loguru import logger
+
+from qdrant_client.models import (
+    Filter, 
+    FieldCondition, 
+    MatchValue, 
+    MatchAny, 
+    Range,
+    DatetimeRange
+)
 
 from src.ingestion.loader import QdrantStoreManager, vector_store_retriever as get_retriever
 from src.rag.retriever import FinancialCrimeRAGSystem
@@ -28,6 +39,82 @@ def custom_success(html_content: str, title="Success!"):
         """,
         unsafe_allow_html=True
     )
+
+def build_filter_from_ui():
+    """Build Qdrant filter from UI selections"""
+    conditions = []
+    
+    # Crime type filter
+    if crime_types:
+        conditions.append(
+            FieldCondition(
+                key="metadata.crime_type",
+                match=MatchAny(any=crime_types)
+            )
+        )
+
+    # Dat filter
+    if start_date or end_date:
+        date_range = {}
+        if start_date:
+            date_range["gte"] = start_date.strftime("%Y-%m-%d")
+        if end_date:
+            date_range["lte"] = end_date.strftime("%Y-%m-%d")
+        
+        conditions.append(
+            FieldCondition(
+                key="metadata.date",
+                range=DatetimeRange(
+                    gte=date_range["gte"],
+                    lte=date_range["lte"],
+                    lt=None,
+                    gt=None,
+                ),
+            )
+        )
+
+    # if start_year or end_year:
+    #     years = []
+    #     if start_year and end_year:
+    #         years = list(range(start_year, end_year + 1))
+    #     elif start_year:
+    #         years = [start_year]
+    #     elif end_year:
+    #         years = [end_year]
+        
+    #     conditions.append(
+    #         FieldCondition(
+    #             key="metadata.date",
+    #             match=MatchAny(any=[str(year) for year in years])
+    #         )
+    #     )
+
+    # Amount filter
+    if penalty_category != "All":
+        conditions.append(
+            FieldCondition(
+                key="metadata.penalty_category",
+                match=MatchValue(value=penalty_category)
+            )
+        )
+    # if amount_min > 0 or amount_max > 0:
+    #     amount_range = {}
+    #     if amount_min > 0:
+    #         amount_range["gte"] = amount_min
+    #     if amount_max > 0:
+    #         amount_range["lte"] = amount_max
+        
+    #     conditions.append(
+    #         FieldCondition(
+    #             key="metadata.amounts",
+    #             range=Range(**amount_range)
+    #         )
+    #     )
+
+    # logger.info(f'Filter conditions {conditions}')
+    if conditions:
+        return Filter(must=conditions)
+    return None
 
 # Page config
 st.set_page_config(
@@ -77,6 +164,85 @@ else:
     st.sidebar.success("🌐 Using agent with web search + documents")
 
 st.sidebar.divider()
+
+st.sidebar.subheader("🔍 Advanced Filters")
+
+# Crime Type filter
+crime_types = st.sidebar.multiselect(
+    "Crime Type:",
+    options=[
+        "Ponzi Scheme",
+        "Insider Trading", 
+        "Securities Fraud",
+        "Market Manipulation",
+        "Fraud (General)",
+        "Cryptocurrency Fraud"
+    ],
+    key="crime_types",
+    help="Filter by type of financial crime"
+)
+
+# # Date range filter
+# col1, col2 = st.sidebar.columns(2)
+# with col1:
+#     start_year = st.sidebar.selectbox(
+#         "From Year:",
+#         options=[None, 2020, 2021, 2022, 2023, 2024, 2025],
+#         index=0
+#     )
+# with col2:
+#     end_year = st.sidebar.selectbox(
+#         "To Year:",
+#         options=[None, 2020, 2021, 2022, 2023, 2024, 2025],
+#         index=0
+#     )
+col1, col2 = st.sidebar.columns(2)
+with col1:
+    start_date = st.date_input(
+        "From:",
+        value=None,
+        min_value=datetime(2023, 1, 1),
+        max_value=datetime(2025, 12, 31),
+        key="start_date"
+    )
+with col2:
+    end_date = st.date_input(
+        "To:",
+        value=None,
+        min_value=start_date,
+        max_value=datetime(2025, 12, 31),
+        key="end_date"
+    )
+
+# Amount range filter
+penalty_category = st.sidebar.selectbox(
+    "Penalty Range:",
+    options=["All", "Under $100K", "$100K - $1M", "$1M - $10M", "Over $10M"],
+    key="penalty_type"
+)
+# st.sidebar.subheader("💰 Penalty Amount")
+# amount_min = st.sidebar.number_input(
+#     "Min Amount ($):",
+#     min_value=0,
+#     value=0,
+#     step=10000,
+#     key="amount_min"
+# )
+# amount_max = st.sidebar.number_input(
+#     "Max Amount ($):",
+#     min_value=0,
+#     value=0,
+#     step=10000,
+#     help="0 = no limit",
+#     key="amount_max"
+# )
+
+# Clear filters button
+if st.sidebar.button("🗑️ Clear Filters"):
+    for key in ["crime_types", "start_date", "end_date", "amount_min", "amount_max", "penalty_type"]:
+        if key in st.session_state:
+            del st.session_state[key]
+    st.rerun()
 
 # Evaluation Results Section
 st.sidebar.title("📊 Evaluation Results")
@@ -203,10 +369,10 @@ if st.button(button_text, type="primary") or (query and len(st.session_state.mes
                 start = time.time()
                 if rag_mode == "Plain RAG":
                     # Use plain RAG (document retrieval only)
-                    response = st.session_state.rag_system.query(query)
+                    response = st.session_state.rag_system.query(query, filter=build_filter_from_ui())
                 else:
                     # Use agentic RAG (can use web search + documents)
-                    response = st.session_state.rag_system.agent_query(query)
+                    response = st.session_state.rag_system.agent_query(query, filter=build_filter_from_ui())
             
                 
                 if hasattr(response, "content"):
