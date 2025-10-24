@@ -231,6 +231,36 @@ def extract_people_simple(content: str) -> List[str]:
     
     return list(dict.fromkeys(names))[:10]
 
+def convert_amounts_to_numbers(amounts: List) -> List:
+    """Convert str numbers to numbers"""
+    cleaned_amounts = []
+    for amount in amounts:
+        amount = amount.strip("$").replace(",", "").lower()
+        if "million" in amount or "m" in amount:
+            amount = float(amount.strip("million").strip("m").strip()) * 1_000_000
+        elif "billion" in amount or "b" in amount:
+            amount = float(amount.strip("billion").strip()) * 1_000_000_000
+        else:
+            amount = float(amount.strip())
+        cleaned_amounts.append(amount)
+    return cleaned_amounts
+
+def categorize_penalty(amounts: List[float]) -> str:
+    """Categorize by largest penalty"""
+    if not amounts:
+        return "Unknown"
+    
+    max_amount = max(amounts)
+    if max_amount < 100000:
+        return "Under $100K"
+    elif max_amount < 1000000:
+        return "$100K - $1M"
+    elif max_amount < 10000000:
+        return "$1M - $10M"
+    else:
+        return "Over $10M"
+            
+
 def preprocess_document(doc: Dict) -> Dict:
     """Preprocess a single SEC document"""
     content = doc.get('content', '')
@@ -252,6 +282,7 @@ def preprocess_document(doc: Dict) -> Dict:
     amounts = extract_amounts(content)
     people = extract_people_simple(content)
 
+
     processed = {
         'lr_no': doc.get('lr_no', '').replace('Release No.', '').strip(),
         'title': doc.get('title', ''),
@@ -260,7 +291,8 @@ def preprocess_document(doc: Dict) -> Dict:
         'content': content,
         'content_length': len(content),
         'crime_type': crime_type,
-        'amounts': amounts,
+        'amounts': convert_amounts_to_numbers(amounts),
+        'penalty_category': categorize_penalty(convert_amounts_to_numbers(amounts)),
         'people_mentioned': people,
         'see_also': doc.get('see_also', []),
         'source': 'SEC'

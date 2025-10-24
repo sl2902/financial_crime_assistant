@@ -50,6 +50,7 @@ def recursive_chunking(
                     'content_length': doc.get('content_length'),
                     'crime_type': doc.get('crime_type', []),
                     'amounts': doc.get('amounts', []),
+                    'penalty_category': doc.get('penalty_category', 'Uknown'),
                     'people_mentioned': doc.get('people_mentioned', []),
                     'title': doc.get('title', ''),
                     'see_also': doc.get('see_also', ''),
