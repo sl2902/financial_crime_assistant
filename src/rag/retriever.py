@@ -36,7 +36,8 @@ from src.ingestion.loader import QdrantStoreManager, vector_store_retriever
 from src.schemas.rag_schemas import(
    Citation,
    StructuredAnswer, 
-   RAGResponse
+   RAGResponse,
+   QueryInput
 ) 
 
 load_dotenv()

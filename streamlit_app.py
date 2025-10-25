@@ -7,6 +7,7 @@ import time
 from datetime import datetime
 import atexit
 from loguru import logger
+from pydantic import ValidationError
 
 from qdrant_client.models import (
     Filter, 
@@ -19,6 +20,7 @@ from qdrant_client.models import (
 
 from src.ingestion.loader import QdrantStoreManager, vector_store_retriever as get_retriever
 from src.rag.retriever import FinancialCrimeRAGSystem
+from src.schemas.rag_schemas import QueryInput
 
 def custom_success(html_content: str, title="Success!"):
     """Custom success box that works with HTML content"""
@@ -367,12 +369,16 @@ if st.button(button_text, type="primary") or (query and len(st.session_state.mes
             # Call appropriate method based on mode
             try:
                 start = time.time()
+                query = QueryInput(
+                    question=query,
+                    limit = 3
+                )
                 if rag_mode == "Plain RAG":
                     # Use plain RAG (document retrieval only)
-                    response = st.session_state.rag_system.query(query, filter=build_filter_from_ui())
+                    response = st.session_state.rag_system.query(query.question, filter=build_filter_from_ui(), limit=query.limit)
                 else:
                     # Use agentic RAG (can use web search + documents)
-                    response = st.session_state.rag_system.agent_query(query, filter=build_filter_from_ui())
+                    response = st.session_state.rag_system.agent_query(query.question, filter=build_filter_from_ui())
             
                 
                 if hasattr(response, "content"):
@@ -384,7 +390,9 @@ if st.button(button_text, type="primary") or (query and len(st.session_state.mes
                     "answer": response,
                     "mode": rag_mode
                 })
-                end = time.time()  
+                end = time.time()
+            except ValidationError as err:
+                logger.error(f"Citation validation failed: {err}")
             except Exception as e:
                 st.error(f"Error: {str(e)}")
                 st.info("Try switching RAG modes or rephrasing your question.")
@@ -400,7 +408,7 @@ if st.session_state.messages:
     # Show which mode was used
     mode_used = latest.get("mode", "Unknown")
     st.markdown(f"**Question:** (answered using {mode_used})")
-    st.info(latest["question"])
+    st.info(latest["question"].question)
     
     st.markdown("**Answer:**")
     answer_text = latest["answer"]
