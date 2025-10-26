@@ -1,9 +1,12 @@
 """Configuration for entity extraction using Pydantic Settings."""
 
+import os
 from typing import Literal, Optional
+from dotenv import load_dotenv
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+load_dotenv()
 
 class EntityExtractorConfig(BaseSettings):
     """Configuration for LLM-based entity extraction.
@@ -18,7 +21,7 @@ class EntityExtractorConfig(BaseSettings):
     """
 
     # Provider selection
-    provider: Literal["anthropic", "openai", "google"] = "anthropic"
+    provider: Literal["anthropic", "openai", "openai_async", "google"] = "anthropic"
     
     # Model configuration
     model: str = "claude-sonnet-4-20250514"
@@ -26,9 +29,9 @@ class EntityExtractorConfig(BaseSettings):
     max_tokens: int = 4096
     
     # API Keys (read from environment)
-    anthropic_api_key: Optional[str] = None
-    openai_api_key: Optional[str] = None
-    google_api_key: Optional[str] = None
+    anthropic_api_key: Optional[str] = os.getenv("ANTHROPIC_API_KEY")
+    openai_api_key: Optional[str] = os.getenv("OPENAI_API_KEY")
+    google_api_key: Optional[str] = os.getenv("GEMINI_API_KEY")
     
     model_config = SettingsConfigDict(
         env_prefix="ENTITY_EXTRACTOR_",
@@ -44,7 +47,7 @@ class EntityExtractorConfig(BaseSettings):
             if not self.anthropic_api_key:
                 raise ValueError("ANTHROPIC_API_KEY not set in environment")
             return self.anthropic_api_key
-        elif self.provider == "openai":
+        elif self.provider == "openai" or self.provider == "openai_async":
             if not self.openai_api_key:
                 raise ValueError("OPENAI_API_KEY not set in environment")
             return self.openai_api_key
@@ -70,7 +73,8 @@ MODEL_PRESETS = {
     },
     "budget": {
         "anthropic": "claude-haiku-3.5-20241022",  # $1/$5 per 1M tokens
-        "openai": "gpt-4o-mini",  # $0.15/$0.60 per 1M tokens
+        "openai": "gpt-4o-mini",  # $0.15/$0.60 per 1M tokens,
+        "openai_async": "gpt-4o-mini",
         "google": "gemini-1.5-flash",  # $0.075/$0.30 per 1M tokens
     },
 }
@@ -78,7 +82,7 @@ MODEL_PRESETS = {
 
 def get_preset_config(
     preset: Literal["development", "production", "budget"] = "development",
-    provider: Literal["anthropic", "openai", "google"] = "anthropic",
+    provider: Literal["anthropic", "openai", "openai_async", "google"] = "anthropic",
 ) -> EntityExtractorConfig:
     """Get a preset configuration for common use cases.
     
@@ -91,6 +95,9 @@ def get_preset_config(
     """
     model = MODEL_PRESETS[preset][provider]
     return EntityExtractorConfig(provider=provider, model=model)
+
+processed_file_path = 'data/processed/'
+save_path = 'data/kg/processed'
 
 
 # Example usage
