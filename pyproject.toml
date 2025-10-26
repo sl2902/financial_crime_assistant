@@ -22,6 +22,10 @@ dependencies = [
     "rapidfuzz==3.14.1",
     "streamlit==1.50.0",
     "markdown2==2.5.4",
+    "anthropic==0.71.0",
+    "google-generativeai==0.8.5",
+    "aiofiles==25.1.0",
+    "neo4j==6.0.2",
 ]
 
 [tool.poetry.dependencies]
