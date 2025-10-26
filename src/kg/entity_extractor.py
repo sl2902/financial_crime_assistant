@@ -4,8 +4,17 @@ import os
 import json
 from typing import Any, List, Dict, Optional
 from loguru import logger
+import glob
+import aiofiles
+import asyncio
 
-from src.config.model_config import EntityExtractorConfig
+from src.config.model_config import (
+    EntityExtractorConfig, 
+    MODEL_PRESETS, 
+    get_preset_config,
+    processed_file_path,
+    save_path
+)
 from src.schemas.entity_schemas import (
     Case,
     Company,
@@ -24,13 +33,49 @@ PROMPT = """Analyze this SEC enforcement document and extract all relevant entit
         Text:
         {text}
 
-        Instructions:
-        - Extract ALL persons charged or involved
-        - Extract ALL companies mentioned
-        - Identify all crime types
-        - Parse monetary amounts carefully
-        - Extract all penalties with recipients
-        - Use YYYY-MM-DD date format
+        **CRITICAL INSTRUCTIONS:**
+
+        **PERSONS - Extract ONLY:**
+        - Defendants (individuals charged with violations)
+        - Respondents (individuals named in the complaint)
+        - Officers/employees of companies being charged (CEO, CFO, etc.)
+
+        **DO NOT EXTRACT:**
+        - SEC staff (attorneys, investigators, supervisors)
+        - Judges or court officials
+        - Auditors or external parties (unless they are defendants)
+
+        **COMPANIES - Extract:**
+        - All companies charged or named as respondents
+        - Companies affiliated with defendants
+
+        **CRIME TYPES - Identify from this list:**
+        - Ponzi Scheme
+        - Insider Trading
+        - Securities Fraud
+        - Wire Fraud
+        - Money Laundering
+        - Embezzlement
+        - Market Manipulation
+        - Bribery/FCPA
+        - Fraud (General)
+        - Financial Crime (Other)
+
+        **PENALTIES - Extract:**
+        - Type (Monetary, Disgorgement, Injunction, Bar, etc.)
+        - Amount (parse carefully: "$1.5 million" = 1500000.0)
+        - Description
+        - Recipient (person or company name)
+
+        **COMPANY AFFILIATIONS:**
+        - For each person, list the companies they are associated with
+        - Example: If "John Smith, CEO of Acme Corp" → company_affiliations: ["Acme Corp"]
+
+        **DATE FORMAT:**
+        - Use YYYY-MM-DD format for filing_date
+        - Extract from the document or use metadata date
+
+        Extract all entities now using the tool.
         """
 
 class EntityExtractor:
@@ -80,7 +125,7 @@ class EntityExtractor:
         if api_key:
             if config.provider == provider:
                 config.anthropic_api_key = api_key
-            elif config.provider == "openai":
+            elif config.provider == "openai" or config.provider == "openai_async":
                 config.openai_api_key = api_key
             elif config.provider == "google":
                 config.google_api_key = api_key
@@ -99,6 +144,10 @@ class EntityExtractor:
         if self.config.provider == "openai":
             from openai import OpenAI
             return OpenAI(api_key=api_key)
+        
+        if self.config.provider == "openai_async":
+            from openai import AsyncOpenAI
+            return AsyncOpenAI(api_key=api_key)
         
         if self.config.provider == "google":
             import google.generativeai as genai
@@ -120,44 +169,81 @@ class EntityExtractor:
         Returns:
             ExtractedEntities object with all extracted entities
         """
-        prompt = self._build_extraction_prompt(text, lr_number, metadata)
-
         try:
             if self.config.provider == "anthropic":
-                response_text = self._call_anthropic(prompt)
-            elif self.config.provider == "openai":
-                response_text = self._call_openai(prompt)
+                extracted_data = self._call_anthropic_with_tools(text, lr_number, metadata)
+            elif self.config.provider == "openai" or self.config.provider == "openai_async":
+                extracted_data = self._call_openai_with_tools(text, lr_number, metadata)
             elif self.config.provider == "google":
-                response_text = self._call_google(prompt)
+                # Google uses function calling (similar to tools)
+                extracted_data = self._call_google_with_tools(text, lr_number, metadata)
             else:
                 raise ValueError(f"Unsupported provider: {self.config.provider}")
-            
-            json_text = self._extract_json(response_text)
-            extracted_data = json.loads(json_text)
-    
+
+            # Build ExtractedEntities with validation
             return self._build_extracted_entities(extracted_data, text, lr_number, metadata)
-        
+
         except Exception as e:
             logger.info(f"Error extracting entities from {lr_number}: {e}")
-            # return minimal valid structure
-            return ExtractedEntities(
-                lr_number=lr_number,
-                case=Case(
+            import traceback
+            traceback.print_exc()
+            
+            try:
+                return ExtractedEntities(
                     lr_number=lr_number,
-                    title=f"Error processing {lr_number}",
-                    crime_types=[CrimeType.FINANCIAL_CRIME_OTHER],
-                    filing_date=metadata.get("filing_date", "1900-01-01"),
-                    url=metadata.get("url", "https://www.sec.gov"),
-                ),
-                raw_text=text[:500],  # Store snippet for debugging
-            )
+                    case=Case(
+                        lr_number=lr_number,
+                        title=f"Error processing {lr_number}",
+                        crime_types=[CrimeType.FINANCIAL_CRIME_OTHER],
+                        filing_date=metadata.get("filing_date", "2024-01-01"),
+                        url=metadata.get("url", "https://www.sec.gov"),
+                    ),
+                    raw_text=text[:500],
+                )
+            except:
+                return None
+    
+    async def extract_entities_async(
+            self, text: str, lr_number: str, metadata: Optional[dict] = None
+    ) -> ExtractedEntities:
+        """Async version of extract_entities."""
+        try:
+            # Call appropriate provider asynchronously
+            if self.config.provider == "anthropic":
+                extracted_data = await self._call_anthropic_with_tools_async(text, lr_number, metadata)
+            elif self.config.provider == "openai" or self.config.provider == "openai_async":
+                extracted_data = await self._call_openai_with_tools_async(text, lr_number, metadata)
+            elif self.config.provider == "google":
+                extracted_data = await self._call_google_with_tools_async(text, lr_number, metadata)
+            else:
+                raise ValueError(f"Unsupported provider: {self.config.provider}")
+
+            return self._build_extracted_entities(extracted_data, text, lr_number, metadata)
+
+        except Exception as e:
+            logger.error(f"Error extracting entities from {lr_number}: {e}")
+            # Return minimal fallback
+            try:
+                return ExtractedEntities(
+                    lr_number=lr_number,
+                    case=Case(
+                        lr_number=lr_number,
+                        title=f"Error processing {lr_number}",
+                        crime_types=[CrimeType.FINANCIAL_CRIME_OTHER],
+                        filing_date=metadata.get("filing_date", "2024-01-01"),
+                        url=metadata.get("url", "https://www.sec.gov"),
+                    ),
+                    raw_text=text[:500],
+                )
+            except:
+                return None
     
     def _get_tool_schema(self) -> Dict:
         """Generate tool schema from Pydantic models"""
 
         return {
             "name": "extract_entities",
-            "description": "Extract structured entities (persons, companies, case details, penalties) from SEC enforcement document",
+            "description": "ONLY extract defendants, respondents, or individuals charged with violations. DO NOT extract SEC staff, investigators, attorneys, or supervisors.",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -168,11 +254,11 @@ class EntityExtractor:
                             "type": "object",
                             "properties": {
                                 "name": {"type": "string", "description": "Full name"},
-                                "role": {"type": "string", "description": "Title/role (e.g., CEO, CFO)"},
+                                "role": {"type": "string", "description": "Include person's role if mentioned (CEO, CFO, Founder, etc.)"},
                                 "company_affiliations": {
                                     "type": "array",
                                     "items": {"type": "string"},
-                                    "description": "Companies associated with this person"
+                                    "description": "List Companies associated/affiliated with this person"
                                 }
                             },
                             "required": ["name"]
@@ -307,6 +393,44 @@ class EntityExtractor:
 
         tool_call = response.choices[0].message.tool_calls[0]
         return json.loads(tool_call.function.arguments)
+    
+    async def _call_openai_with_tools_async(self, text: str, lr_number: str, metadata: Optional[Dict]) -> Dict:
+        """Async OpenAI API call."""
+        tool_schema = self._get_tool_schema()
+        
+        function_def = {
+            "type": "function",
+            "function": {
+                "name": tool_schema["name"],
+                "description": tool_schema["description"],
+                "parameters": tool_schema["input_schema"]
+            }
+        }
+        
+        prompt = PROMPT.format(lr_number=lr_number, metadata=metadata, text=text)
+        
+        # Use async OpenAI client
+        response = await self.client.chat.completions.create(
+            model=self.config.model,
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ],
+            tools=[function_def],
+            tool_choice={
+                "type": "function",
+                "function": {
+                    "name": "extract_entities",
+                }
+            },
+            temperature=self.config.temperature,
+            max_tokens=self.config.max_tokens,
+        )
+        
+        tool_call = response.choices[0].message.tool_calls[0]
+        return json.loads(tool_call.function.arguments)
 
     def _call_google_with_tools(self, text: str, lr_number: str, metadata: Optional[dict]) -> dict:
         """Call Google Gemini API with function calling."""
@@ -415,7 +539,7 @@ class EntityExtractor:
         )
     
     def batch_extract(
-            self, documents: list[dict], save_path: Optional[str] = None
+            self, documents: List[Dict], save_path: Optional[str] = None
     ) -> List[ExtractedEntities]:
         """Extract entities from multiple documents.
 
@@ -428,21 +552,50 @@ class EntityExtractor:
         """
         results = []
 
+        SEC_KEYWORDS = ['attorney', 'investigator', 'supervisor', 'trial counsel', 
+                'regional office', 'litigation', 'sec ']
+
+
         for i, doc in enumerate(documents):
-            logger.info(f"Processing {i+1}/{len(documents)}: {doc['lr_number']}")
+            try:
+                logger.info(f"Processing {i+1}/{len(documents)}: {doc['lr_no']}")
+                if ',' in doc['lr_no']:
+                    logger.warning(f"Document{doc['lr_no']} has invalid LR number. Attempt to clean it or reject the document")
+                    doc["lr_no"] = doc["lr_no"].split(", ")[0].strip()
+                    logger.info("Successfully cleaned the document")
 
-            entities = self.extract_entities(
-                text=doc["text"],
-                lr_number=doc["lr_number"],
-                metadata=doc.get("metadata"),
-            )
+                metadata = {
+                        'lr_no': doc.get('lr_no', ''),
+                        'date': doc.get('date', ''),
+                        'url': doc.get('url', None) or doc.get('main_link', ''),
+                        'content_length': doc.get('content_length'),
+                        'crime_type': doc.get('crime_type', []),
+                        'amounts': doc.get('amounts', []),
+                        'penalty_category': doc.get('penalty_category', 'Uknown'),
+                        'people_mentioned': doc.get('people_mentioned', []),
+                        'title': doc.get('title', ''),
+                        'see_also': doc.get('see_also', ''),
+                        'source': 'SEC'
+                }
 
-            results.append(entities)
+                entities = self.extract_entities(
+                    text=doc["content"],
+                    lr_number=doc["lr_no"],
+                    metadata=metadata,
+                )
+                entities.persons = [
+                    p for p in entities.persons
+                    if not any(keyword in (p.role or "").lower() for keyword in SEC_KEYWORDS)
+                ]
 
-            stats = entities.summary_stats()
-            logger.info(f"  Extracted: {stats['num_persons']} persons, "
-                  f"{stats['num_companies']} companies, "
-                  f"{stats['num_penalties']} penalties")
+                results.append(entities)
+                stats = entities.summary_stats()
+                logger.info(f"  Extracted: {stats['num_persons']} persons, "
+                    f"{stats['num_companies']} companies, "
+                    f"{stats['num_penalties']} penalties")
+            except Exception as e:
+                logger.error(f" Failed to process {doc['lr_no']}: {e}")
+                continue
         
         if save_path:
             with open(save_path, "w") as f:
@@ -452,10 +605,179 @@ class EntityExtractor:
 
         return results
     
+    async def batch_extract_async(
+        self, 
+        documents: List[Dict], 
+        save_path: Optional[str] = None,
+        concurrency: int = 10
+    ) -> List[ExtractedEntities]:
+        """Async batch extraction with concurrency control."""
+        
+        SEC_KEYWORDS = ['attorney', 'investigator', 'supervisor', 'trial counsel', 
+                        'regional office', 'litigation', 'sec ']
+        
+        # Semaphore to limit concurrent requests
+        semaphore = asyncio.Semaphore(concurrency)
+        
+        async def process_doc(doc, index):
+            async with semaphore:
+                logger.info(f"Processing {index+1}/{len(documents)}: {doc['lr_no']}")
 
-if __name__ == "__main__":
+                if ',' in doc['lr_no']:
+                    logger.warning(f"Document{doc['lr_no']} has invalid LR number. Attempt to clean it or reject the document")
+                    doc["lr_no"] = doc["lr_no"].split(", ")[0].strip()
+                    logger.info("Successfully cleaned the document")
+                
+                metadata = {
+                    'lr_no': doc.get('lr_no', ''),
+                    'date': doc.get('date', ''),
+                    'url': doc.get('url', None) or doc.get('main_link', ''),
+                    'content_length': doc.get('content_length'),
+                    'crime_type': doc.get('crime_type', []),
+                    'amounts': doc.get('amounts', []),
+                    'penalty_category': doc.get('penalty_category', 'Uknown'),
+                    'people_mentioned': doc.get('people_mentioned', []),
+                    'title': doc.get('title', ''),
+                    'see_also': doc.get('see_also', ''),
+                    'source': 'SEC'
+                }
+                
+                try:
+                    entities = await self.extract_entities_async(
+                        text=doc["content"],
+                        lr_number=doc["lr_no"],
+                        metadata=metadata,
+                    )
+                    
+                    if entities:
+                        # Filter SEC staff
+                        entities.persons = [
+                            p for p in entities.persons 
+                            if not any(keyword in (p.role or "").lower() 
+                                    for keyword in SEC_KEYWORDS)
+                        ]
+                        
+                        stats = entities.summary_stats()
+                        logger.info(f"  {doc['lr_no']}: {stats['num_persons']} persons, "
+                                f"{stats['num_companies']} companies, "
+                                f"{stats['num_penalties']} penalties")
+                        return entities
+                    
+                except Exception as e:
+                    logger.error(f"  Failed {doc['lr_no']}: {e}")
+                    return None
+                    # async with aiofiles.open("failed_extractions.txt", "a") as f:
+                    #     await f.write(f"{doc['lr_no']}\n")
+                    # return None
+        
+        # Process all documents concurrently
+        tasks = [process_doc(doc, i) for i, doc in enumerate(documents)]
+        results = await asyncio.gather(*tasks)
+
+        # for result in results:
+        #     stats = result.summary_stats()
+        #     logger.info(
+        #         f"Extracted: {stats['num_persons']} persons, "
+        #         f"{stats['num_companies']} companies, "
+        #         f"{stats['num_penalties']} penalties"
+        #     )
+        
+        # Filter out None values (failed extractions)
+        results = [r for r in results if r is not None]
+        
+        if save_path:
+            async with aiofiles.open(save_path, "w") as f:
+                for entity in results:
+                    await f.write(entity.model_dump_json() + "\n")
+            logger.info(f"\n Saved {len(results)} entities to {save_path}")
+        
+        return results
+    
+async def main():
+    config = EntityExtractorConfig(
+        provider="openai_async",
+        model="gpt-4o-mini"
+    )
+    extractor = EntityExtractor(config=config)
+
+    batch_files = sorted(glob.glob(f'{processed_file_path}/sec_releases_batch*_clean.json'))
+    for i, batch_file in enumerate(batch_files, start=1):
+        logger.info(f"Processing batch file {batch_file}")
+        file = f'sec_releases_batch_{i}_kg.jsonl'
+        with open(batch_file, 'r') as f:
+            data = json.load(f)
+            results = await extractor.batch_extract_async(
+                documents=data["releases"],
+                save_path=f"{save_path}/{file}",
+                concurrency=10
+            )
+        
+        logger.info(f"Processed {len(results)} documents")
+
     
 
+if __name__ == "__main__":
+
+    logger.info("=" * 60)
+    logger.info(f"Example 1: Using budget preset ({MODEL_PRESETS.get('budget').get('openai_async')})")
+    logger.info("=" * 60)
+    
+    config = get_preset_config("budget", "openai")
+    extractor = EntityExtractor(config=config)
+    
+    logger.info(f"Provider: {extractor.config.provider}")
+    logger.info(f"Model: {extractor.config.model}")
+
+    # logger.info("\n" + "=" * 60)
+    # logger.info("Example 2: Direct initialization")
+    # logger.info("=" * 60)
+    
+    # extractor = EntityExtractor(
+    #     provider="anthropic",
+    #     model="claude-sonnet-4-20250514"
+    # )
+
+    # sample_text = """
+    # SEC Charges Former CEO with Securities Fraud
+    
+    # The Securities and Exchange Commission today announced charges against John Smith,
+    # former CEO of TechCorp Inc. (NASDAQ: TECH), for securities fraud. Smith allegedly
+    # inflated revenue by $50 million over three years. TechCorp agreed to pay a
+    # $5 million civil penalty and implement enhanced controls. Smith was also barred
+    # from serving as an officer or director of a public company.
+    # """
+
+    # logger.info("\nExtracting entities...")
+    # entities = extractor.extract_entities(
+    #     text=sample_text,
+    #     lr_number="LR-25000",
+    #     metadata={
+    #         "url": "https://www.sec.gov/litigation/litreleases/lr25000.htm",
+    #         "filing_date": "2024-10-24"
+    #     },
+    # )
+
+    # logger.info("\n" + "=" * 60)
+    # logger.info("EXTRACTION RESULTS")
+    # logger.info("=" * 60)
+    # logger.info(json.dumps(entities.summary_stats(), indent=2))
+    # persons = [p.name for p in entities.persons]
+    # companies = [c.name for c in entities.companies]
+    # penalties = [f"${p.amount:,.0f}" if p.amount else p.penalty_type.value 
+    #                      for p in entities.penalties]
+    # logger.info(f"\nPersons: {persons}")
+    # logger.info(f"\nCompanies: {companies}")
+    # logger.info(f"\nPenalties: {penalties}")
+
+
+    # batch_files = sorted(glob.glob(f'{processed_file_path}/sec_releases_batch*_clean.json'))
+    # for i, batch_file in enumerate(batch_files[1:], start=1):
+    #     logger.info(f"Processing batch file {batch_file}")
+    #     file = f'sec_releases_batch_{i}_kg.jsonl'
+    #     with open(batch_file, 'r') as f:
+    #         data = json.load(f)
+    #         extractor.batch_extract(data["releases"], f"{save_path}/{file}")
+    asyncio.run(main())
 
 
 
