@@ -3,6 +3,7 @@
 from datetime import datetime, date
 from enum import Enum
 from typing import List, Optional
+from loguru import logger
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -58,7 +59,7 @@ class Company(BaseModel):
     """Represents a company involved in a financial crime case"""
 
     name: str = Field(..., description="Company name")
-    ticker: str = Field(None, description="Stock ticker symbol if available")
+    ticker: Optional[str] = Field(None, description="Stock ticker symbol if available")
     industry: Optional[str] = Field(None, description="Industry/sector")
     description: Optional[str] = Field(None, description="Brief description")
 
@@ -197,10 +198,10 @@ if __name__ == "__main__":
     person = Person(
         name="John Doe", role="CEO", company_affiliations=["Acme Corp", "TechStart Inc"]
     )
-    print(f"Person: {person.name} - {person.role}")
+    logger.info(f"Person: {person.name} - {person.role}")
 
     company = Company(name="Acme Corp", ticker="ACME", industry="Technology")
-    print(f"Company: {company.name} ({company.ticker})")
+    logger.info(f"Company: {company.name} ({company.ticker})")
 
     case = Case(
         lr_number="12345",
@@ -209,7 +210,7 @@ if __name__ == "__main__":
         filing_date="2024-10-24",
         crime_types=[CrimeType.SECURITIES_FRAUD],
     )
-    print(f"Case: {case.lr_number} - {case.title} - {case.filing_date}")
+    logger.info(f"Case: {case.lr_number} - {case.title} - {case.filing_date}")
 
     penalty = Penalty(
         penalty_type=PenaltyType.MONETARY,
@@ -217,5 +218,5 @@ if __name__ == "__main__":
         description="Civil penalty of $1 million",
         recipient="John Doe",
     )
-    print(f"Penalty: {penalty.penalty_type.value} - ${penalty.amount:,.0f}")
+    logger.info(f"Penalty: {penalty.penalty_type.value} - ${penalty.amount:,.0f}")
 
