@@ -362,7 +362,7 @@ class FinancialCrimeRAGSystem:
       if last_message.tool_calls:
          return "action"
         
-      return END
+      return "end"
    
    def _should_use_graph(self, query: str) -> bool:
       """Decide between Neo4j Grapdb or Qdrant Vectorstore"""
