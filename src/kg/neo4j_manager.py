@@ -55,7 +55,8 @@ class Neo4jManager:
             logger.info(f"Connecting to Neo4j at {self.config.uri}")
             self.driver = GraphDatabase.driver(
                 self.config.uri,
-                auth=(self.config.username, self.config.password)
+                auth=(self.config.username, self.config.password),
+                max_connection_lifetime=60
             )
             self.driver.verify_connectivity()
             logger.info(" Successfully connected to Neo4j")
@@ -111,12 +112,18 @@ class Neo4jManager:
         Returns:
             List of result records as dictionaries
         """
-        with self.driver.session(database=self.config.database) as session:
-            result = session.run(query, parameters or {})
-            return [
-                record.data()
-                for record in result
-            ]
+        try:
+            with self.driver.session(database=self.config.database) as session:
+                result = session.run(query, parameters or {})
+                return [
+                    record.data()
+                    for record in result
+                ]
+        except Exception as e:
+            logger.error(f"Neo4j query error: {e}")
+            self.driver.close()
+            self.driver = self._connect()
+            return []
     
     def execute_write(
             self,
