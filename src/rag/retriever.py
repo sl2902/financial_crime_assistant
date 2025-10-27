@@ -325,7 +325,7 @@ class FinancialCrimeRAGSystem:
 
       workflow.add_node("agent", self._call_agent_model)
       workflow.add_node("action", self._tool_call)
-      workflow.add_node("graph_qa", self._graph_query_handler)
+      workflow.add_node("graph_qa", self._should_use_graph)
       workflow.set_entry_point("agent")
       workflow.add_conditional_edges(
          "agent", 
