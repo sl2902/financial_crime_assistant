@@ -39,8 +39,11 @@ from src.schemas.rag_schemas import(
    RAGResponse,
    QueryInput
 ) 
+from src.kg.graph_agent_tool import Neo4jManager, create_graph_tool
 
 load_dotenv()
+
+neo4j_manager = Neo4jManager()
 
 os.environ["LANGCHAIN_TRACING_V2"] = "true"
 os.environ["LANGCHAIN_API_KEY"] = os.getenv("LANGCHAIN_API_KEY")
@@ -97,6 +100,7 @@ class FinancialCrimeRAGSystem:
       self.relevance_threshold = relevance_threshold
       self.chat_prompt = self._create_prompt()
       self.tavily_search_tool = TavilySearch(max_results=5)
+      self.graph_tool = create_graph_tool(neo4j_manager, self.llm)
       self.graph = self._build_graph()
       self.agent_graph = self._build_agent_graph()
       self.current_filter = None
@@ -159,7 +163,7 @@ class FinancialCrimeRAGSystem:
          - Specific case details by crime type or date
          Always use this tool unless the query explicitly asks for current news."""
       )
-      self.tool_belt = [self.tavily_search_tool, self.rag_tool]
+      self.tool_belt = [self.tavily_search_tool, self.rag_tool, self.graph_tool]
       self.llm_bind_tool = self.llm.bind_tools(self.tool_belt)
    
    def __repr__(self):
@@ -308,14 +312,32 @@ class FinancialCrimeRAGSystem:
       - Format: "Recent reports indicate... [Reuters](https://reuters.com/...)."
       - If no clear name, use: [Read more](URL)
 
+      FOR GRAPH DB SOURCE (from graph_tool tool):
+      - Inline citations: [LR-XXXXX](URL)
+      - Place immediately after factual claims
+      - Format: "The defendant was fined $500,000 [LR-26123](https://sec.gov/...)."
+
+      NOTE:
+      Don't answer any query unrelated to your expertise.
+
       Never use generic text like "(source)" - always use specific source names or LR numbers."""
       workflow = StateGraph(AgentState)
 
       workflow.add_node("agent", self._call_agent_model)
       workflow.add_node("action", self._tool_call)
+      workflow.add_node("graph_qa", self._graph_query_handler)
       workflow.set_entry_point("agent")
+      workflow.add_conditional_edges(
+         "agent", 
+         self._should_continue,
+         {
+            "graph": "graph_qa",
+            "tool": "action",
+            "end": END,
+         })
+      
       workflow.add_edge("action", "agent")
-      workflow.add_conditional_edges("agent", self._should_continue)
+      workflow.add_edge("graph_qa", "agent")
 
       return workflow.compile()
     
@@ -341,6 +363,19 @@ class FinancialCrimeRAGSystem:
          return "action"
         
       return END
+   
+   def _should_use_graph(self, query: str) -> bool:
+      """Decide between Neo4j Grapdb or Qdrant Vectorstore"""
+      router_prompt = f"""
+      Decide whether this query requires a GRAPH or VECTOR search.
+      GRAPH: if it asks about relationships, connections, or entities linked together.
+      VECTOR: if it asks for summaries, explanations, or factual retrieval.
+
+      Query: "{query}"
+      Answer only 'GRAPH' or 'VECTOR'.
+      """
+      result = self.llm.invoke(router_prompt).strip().upper()
+      return result == "GRAPH"
     
     # async def agent_query(self, inputs: Dict[str, Any]) -> str:
     #     """Query method for RAG Agent with streaming"""
