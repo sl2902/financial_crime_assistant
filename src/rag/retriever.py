@@ -360,7 +360,7 @@ class FinancialCrimeRAGSystem:
       last_message = state["messages"][-1]
 
       if last_message.tool_calls:
-         return "action"
+         return "tool"
         
       return "end"
    
