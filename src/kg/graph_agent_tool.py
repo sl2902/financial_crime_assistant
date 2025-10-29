@@ -255,9 +255,9 @@ class GraphAgentTool:
             return f"Graph query error: {results['error']}"
         
         if not results.get("results"):
-            return "No results found in knowledge graph."
+            return "Knowledge graph returned no results for this query."
         
-        output = [f"Found {results['count']} results from knowledge graph:\n"]
+        output = ["KNOWLEDGE GRAPH RESULTS:\n"]
 
         for i, record in enumerate(results["results"][:limit], start=1):
             record_lines = [f"\n{i}. "]
