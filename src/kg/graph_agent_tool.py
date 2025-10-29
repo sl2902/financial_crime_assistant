@@ -22,6 +22,7 @@ class GraphAgentTool:
         self.manager = neo4j_manager
         self.llm = llm
         self.schema = self._get_schema_description()
+        self.last_query_results = {}
     
     def _get_schema_description(self) -> str:
         return """
@@ -95,6 +96,7 @@ class GraphAgentTool:
             8. Use collect() and count() for aggregations
             9. For amount comparisons, ensure penalty.amount IS NOT NULL
             10. Return meaningful property names in results
+            11. When using collect() or aggregations, ORDER BY must use the alias from RETURN, not the original variable
 
             IMPORTANT PATTERNS:
             - Ponzi schemes: WHERE 'Ponzi Scheme' IN c.crime_types
@@ -103,40 +105,89 @@ class GraphAgentTool:
             - Recent cases: ORDER BY c.filing_date DESC LIMIT 10
             - Co-defendants: (p1:Person)-[:CHARGED_IN]->(case:Case)<-[:CHARGED_IN]-(p2:Person) WHERE p1 <> p2
 
-            EXAMPLES:
+            === CRITICAL OUTPUT FORMAT RULES ===
 
-            Question: "Show me all Ponzi schemes"
-            Query: 
-            MATCH (c:Case)
-            WHERE 'Ponzi Scheme' IN c.crime_types
-            OPTIONAL MATCH (p:Person)-[:CHARGED_IN]->(c)
-            OPTIONAL MATCH (comp:Company)-[:INVOLVED_IN]->(c)
-            RETURN c.lr_number, c.title, c.filing_date, collect(DISTINCT p.name) AS persons, collect(DISTINCT comp.name) AS companies
-            ORDER BY c.filing_date DESC
+            When returning results, you MUST use these exact aliases:
+
+            1. Person data MUST use alias 'persons' (plural, as list):
+            ✅ CORRECT: collect(DISTINCT p.name) AS persons
+            ❌ WRONG: p.name AS defendant
+            ❌ WRONG: p.name AS person_name
+            ❌ WRONG: collect(p.name) AS defendants
+
+            2. Company data MUST use alias 'companies' (plural, as list):
+            ✅ CORRECT: collect(DISTINCT comp.name) AS companies
+            ❌ WRONG: comp.name AS company
+            ❌ WRONG: comp.name AS organization
+            ❌ WRONG: collect(comp.name) AS orgs
+
+            3. Case data MUST use 'case_' prefix for clarity:
+            ✅ CORRECT: ca.lr_number AS case_lr_number
+            ✅ CORRECT: ca.title AS case_title
+            ✅ CORRECT: ca.filing_date AS case_filing_date
+
+            4. ALWAYS use collect(DISTINCT ...) for one-to-many relationships:
+            ✅ CORRECT: collect(DISTINCT p.name) AS persons
+            ❌ WRONG: p.name AS persons (returns multiple rows)
+
+            5. ORDER BY with aggregation - use the alias, not original variable:
+            ✅ CORRECT: ORDER BY case_filing_date DESC
+            ❌ WRONG: ORDER BY ca.filing_date DESC (causes syntax error after collect)
+
+            === EXAMPLE QUERIES ===
+
+            Query: "Who was charged in Ponzi schemes?"
+            Cypher:
+            ```
+            MATCH (ca:Case)
+            WHERE 'Ponzi Scheme' IN ca.crime_types
+            OPTIONAL MATCH (p:Person)-[:CHARGED_IN]->(ca)
+            OPTIONAL MATCH (comp:Company)-[:INVOLVED_IN]->(ca)
+            RETURN 
+            ca.lr_number AS case_lr_number,
+            ca.title AS case_title,
+            ca.filing_date AS case_filing_date,
+            collect(DISTINCT p.name) AS persons,
+            collect(DISTINCT comp.name) AS companies
+            ORDER BY case_filing_date DESC
             LIMIT 20
+            ```
 
-            Question: "Who worked with people charged in fraud?"
-            Query:
-            MATCH (c:Case)
-            WHERE 'Fraud (General)' IN c.crime_types OR 'Securities Fraud' IN c.crime_types
-            MATCH (p1:Person)-[:CHARGED_IN]->(c)
-            MATCH (p1)-[:WORKED_AT]->(company:Company)<-[:WORKED_AT]-(p2:Person)
-            WHERE p1 <> p2
-            RETURN DISTINCT p1.name AS defendant, p2.name AS colleague, company.name AS company
-            LIMIT 20
+            Query: "Show connections for John Smith"
+            Cypher:
+            ```
+            MATCH (p:Person {{name: 'John Smith'}})
+            OPTIONAL MATCH (p)-[:WORKED_AT]->(comp:Company)
+            OPTIONAL MATCH (p)-[:CHARGED_IN]->(ca:Case)
+            RETURN 
+            p.name AS person_name,
+            collect(DISTINCT comp.name) AS companies,
+            collect(DISTINCT ca.lr_number) AS cases
+            ```
 
-            Question: "Find high penalty cases after 2023"
-            Query:
-            MATCH (c:Case)-[:HAS_PENALTY]->(pen:Penalty)
-            WHERE pen.amount > 10000000 
-            AND pen.amount IS NOT NULL
-            AND c.filing_date >= date('2023-01-01')
-            RETURN c.lr_number, c.title, c.filing_date, sum(pen.amount) AS total_penalties
-            ORDER BY total_penalties DESC
-            LIMIT 20
+            Query: "Find recent fraud cases with high penalties"
+            Cypher:
+            ```
+            MATCH (ca:Case)-[:HAS_PENALTY]->(pen:Penalty)
+            WHERE 'Fraud' IN ca.crime_types AND pen.amount > 10000000
+            OPTIONAL MATCH (p:Person)-[:CHARGED_IN]->(ca)
+            RETURN 
+            ca.lr_number AS case_lr_number,
+            ca.title AS case_title,
+            ca.filing_date AS case_filing_date,
+            sum(pen.amount) AS total_penalty,
+            collect(DISTINCT p.name) AS persons
+            ORDER BY case_filing_date DESC
+            LIMIT 10
+            ```
 
-            NOW CONVERT THIS QUESTION TO A READ-ONLY CYPHER QUERY:
-            {question}
+            === ENFORCEMENT ===
+            - Use exact aliases: persons, companies, case_lr_number, case_title, case_filing_date
+            - Never use synonyms: defendant, accused, organization, corporation
+            - Always use collect(DISTINCT ...) for lists
+            - After collect(), ORDER BY must use the alias (case_filing_date), not the variable (ca.filing_date)
+
+            Question: {question}
 
             Cypher query:"""
         
@@ -305,11 +356,27 @@ class GraphAgentTool:
             logger.error(f"Graph query error: {error_msg}")
             return f"Graph query failed: {error_msg}. Please try rephrasing your question or asking about specific cases, people, or companies."
         
+        self._last_query_results = results.copy()
+        logger.debug(f"Stored {results.get('count', 0)} results for visualization")
+        
         formatted = self._format_results_for_agent(results)
         
-        logger.info(f"Graph tool returning {results.get('count', 0)} results")
+        # logger.info(f"Graph tool returning {results.get('count', 0)} results")
         
         return formatted
+    
+    def get_results_for_visualization(self) -> List[Dict[str, Any]]:
+        """Get raw Neo4j results for graph visualization
+        
+        Returns:
+            List of Neo4j result dictionaries suitable for pyvis visualization
+        """
+        return self.last_results.get('results', [])
+    
+    def clear_results(self):
+        """Clear stored results (call after visualization to free memory)"""
+        self.last_results = {'results': [], 'count': 0}
+
 
 def create_graph_tool(
         neo4j_manager: Neo4jManager,
@@ -358,11 +425,14 @@ def create_graph_tool(
     
     graph_agent = GraphAgentTool(neo4j_manager, llm)
 
-    return Tool(
+    tool = Tool(
         name=tool_name,
         func=graph_agent.search,
         description=tool_description
     )
+    tool._search_instance = graph_agent
+
+    return tool
 
 if __name__ == "__main__":
     
