@@ -454,6 +454,7 @@ class FinancialCrimeRAGSystem:
       tools_used = []
       retrieved_docs = []
       rag_query = ""
+      graph_results = []
 
       for msg in result["messages"]:
          if hasattr(msg, 'tool_calls') and msg.tool_calls:
@@ -470,6 +471,10 @@ class FinancialCrimeRAGSystem:
                            question
                      )
                      retrieved_docs.extend(self.last_retrieved_docs)
+                  elif tool_name == "search_knowledge_graph":
+                     if hasattr(self.graph_tool, '_search_instance'):
+                        graph_results = self.graph_tool._search_instance._last_query_results
+                        logger.info(f"Retrieved {graph_results['count']} graph results for visualization")
                      # if self.current_filter:
                      #       docs = self.last_retrieved_docs
                      # else:
@@ -484,6 +489,7 @@ class FinancialCrimeRAGSystem:
          "tools_used": list(set(tools_used)),
          "sources": retrieved_docs,  # Return deduplicated sources
          "rag_query": rag_query or '',
+         "graph_results": graph_results,
       }
    
    def _add_citations(self, answer: str, docs: List[Document]) -> str:
@@ -623,8 +629,9 @@ if __name__ == "__main__":
    # answer = rag_system.query(question)
    
    # uses sec_documents
-   question = "What penalties were issued for insider trading in 2025?"
+   # question = "What penalties were issued for insider trading in 2025?"
    # question = "What is LR-26161 about?" #"Who is Baris Cabalar? Check documents"
+   question = "Show me all Ponzi schemes. Use knowledge graph tool"
 
    # answer = rag_system.query(question)
 
