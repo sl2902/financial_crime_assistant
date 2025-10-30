@@ -110,7 +110,8 @@ class GraphVisualizer:
             font_color=self.font_color,
             select_menu=True,
             filter_menu=True,
-            notebook=False
+            notebook=False,
+            cdn_resources='remote',
         )
 
         if self.layout == "barnes_hut":
