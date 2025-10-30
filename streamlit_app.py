@@ -1,4 +1,5 @@
 """Financial Crime Compliance Assistant - Streamlit Interface with RAG Mode Selection"""
+import os
 import streamlit as st
 import pandas as pd
 from pathlib import Path
@@ -21,6 +22,75 @@ from qdrant_client.models import (
 from src.ingestion.loader import QdrantStoreManager, vector_store_retriever as get_retriever
 from src.rag.retriever import FinancialCrimeRAGSystem
 from src.schemas.rag_schemas import QueryInput
+from src.visualization.graph_viz import GraphVisualizer
+
+@st.cache_data
+def display_graph_visualization(graph_results, answer_data):
+    """Display interactive graph visualization in Streamlit.
+    
+    Args:
+        graph_results: Results from graph query tool
+        answer_data: Full answer data including tools used
+    """
+    # Check if graph tool was used
+    # logger.info(f'Here inside display_graph_visualization {graph_results}')
+    tools_used = answer_data.get('tools_used', [])
+    
+    if 'search_knowledge_graph' not in tools_used:
+        return  # Don't show graph if tool wasn't used
+    
+    # Check if we have results
+    if not graph_results or len(graph_results) == 0:
+        st.info("🕸️ No network connections found for this query")
+        return
+    
+    # Create graph visualization
+    st.subheader("🕸️ Network Connections")
+    
+    with st.expander("📊 View Interactive Graph", expanded=True):
+        try:
+            # Initialize visualizer
+            viz = GraphVisualizer(height="650px", width="100%")
+            
+            # Create graph
+            html_file = viz.visualize(graph_results)
+            
+            # if os.path.exists(html_file):
+            #     # Read HTML
+            #     with open(html_file, 'r') as f:
+            #         html_content = f.read()
+
+            # Display in Streamlit
+            with open(html_file, 'r', encoding='utf-8') as f:
+                html_content = f.read()
+            
+            
+            st.components.v1.html(html_content, height=800, scrolling=True)
+            
+            # Add legend
+            st.markdown("""
+            **Legend:**
+            - 👤 **Red nodes** = People
+            - 🏢 **Teal nodes** = Companies
+            - ⚖️ **Yellow nodes** = Cases
+            - 💰 **Mint nodes** = Penalties
+            
+            **Interactions:**
+            - 🖱️ Drag nodes to rearrange
+            - 🔍 Scroll to zoom
+            - 💡 Hover for details
+            """)
+
+            st.download_button(
+                "📥 Download Graph HTML (if not visible above)",
+                data=html_content,
+                file_name="network_graph.html",
+                mime="text/html"
+            )
+            
+        except Exception as e:
+            st.error(f"Error creating graph visualization: {e}")
+
 
 def custom_success(html_content: str, title="Success!"):
     """Custom success box that works with HTML content"""
@@ -419,6 +489,7 @@ if st.session_state.messages:
         tools_used = answer_text.get("tools_used", [])
         sources = answer_text.get("sources", [])
         rag_query = answer_text.get("rag_query", "")
+        graph_results = answer_text.get("graph_results", {})
     else:
         # Plain RAG response (string)
         display_text = str(answer_text)
@@ -435,22 +506,9 @@ if st.session_state.messages:
     else:
         if execution_time:
             st.caption(f"🕒 Execution Time: {round(execution_time, 2)} seconds")
-    # # Show sources (expandable)
-    # if isinstance(result, dict) and result.get("sources"):
-    #     with st.expander("📚 View Sources"):
-    #         for i, doc in enumerate(result["sources"], 1):
-    #             lr_no = doc.metadata.get('lr_no', 'Unknown')
-    #             url = doc.metadata.get('url', 'N/A')
-    #             date = doc.metadata.get('date', 'N/A')
-    #             crime = ', '.join(doc.metadata.get('crime_type', []))
-                
-    #             st.markdown(f"**{i}. {lr_no}** ({date})")
-    #             st.markdown(f"Crime Type: {crime}")
-    #             if rag_query:
-    #                 st.markdown(f"Query: {rag_query}")
-    #             st.markdown(f"[View on SEC.gov]({url})")
-    #             st.markdown(doc.page_content[:200] + "...")
-    #             st.divider()
+    
+    if answer_text.get("tools_used") and answer_text.get("tools_used")[0] == "search_knowledge_graph":
+        display_graph_visualization(answer_text.get("graph_results", {}).get("results", []), answer_text)
     
     # Show conversation history
     if len(st.session_state.messages) > 1:
