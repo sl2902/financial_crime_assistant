@@ -86,17 +86,19 @@ class GraphAgentTool:
             {self.schema}
 
             RULES:
-            1. Return ONLY the Cypher query, no explanations
-            2. Use MATCH, WHERE, RETURN statements appropriately
-            3. Include OPTIONAL MATCH for related data that might not exist
-            4. Use LIMIT 20 by default unless the question specifies a different number
-            5. For text searches, use: toLower(property) CONTAINS toLower($search_term)
-            6. For date filtering, use: date() function
-            7. Always order by filing_date DESC for cases
-            8. Use collect() and count() for aggregations
-            9. For amount comparisons, ensure penalty.amount IS NOT NULL
-            10. Return meaningful property names in results
-            11. When using collect() or aggregations, ORDER BY must use the alias from RETURN, not the original variable
+            1. CRITICAL: Obey the graph database schema
+            2. Return ONLY the Cypher query, no explanations
+            3. Use MATCH, WHERE, RETURN statements appropriately
+            4. Include OPTIONAL MATCH for related data that might not exist
+            5. Use LIMIT 20 by default unless the question specifies a different number
+            6. For text searches, use: toLower(property) CONTAINS toLower($search_term)
+            7. For date filtering, use: date() function
+            8. Always order by filing_date DESC for cases
+            9. Use collect() and count() for aggregations
+            10. For amount comparisons, ensure penalty.amount IS NOT NULL
+            11. Return meaningful property names in results
+            12. When using collect() or aggregations, ORDER BY must use the alias from RETURN, not the original variable
+            13. CRITICAL: When querying cases, ALWAYS include OPTIONAL MATCH for persons and companies. NEVER return just case properties without relationships.
 
             IMPORTANT PATTERNS:
             - Ponzi schemes: WHERE 'Ponzi Scheme' IN c.crime_types
@@ -104,6 +106,24 @@ class GraphAgentTool:
             - High penalties: WHERE pen.amount > 10000000 AND pen.amount IS NOT NULL
             - Recent cases: ORDER BY c.filing_date DESC LIMIT 10
             - Co-defendants: (p1:Person)-[:CHARGED_IN]->(case:Case)<-[:CHARGED_IN]-(p2:Person) WHERE p1 <> p2
+
+            === MANDATORY CASE QUERY TEMPLATE ===
+
+            For ANY query about cases, you MUST follow this template:
+            ```
+            MATCH (ca:Case)
+            WHERE <your_conditions>
+            OPTIONAL MATCH (p:Person)-[:CHARGED_IN]->(ca)
+            OPTIONAL MATCH (comp:Company)-[:INVOLVED_IN]->(ca)
+            RETURN 
+            ca.lr_number AS case_lr_number,
+            ca.title AS case_title,
+            ca.filing_date AS case_filing_date,
+            collect(DISTINCT p.name) AS persons,
+            collect(DISTINCT comp.name) AS companies
+            ORDER BY case_filing_date DESC
+            LIMIT 20
+            ```
 
             === CRITICAL OUTPUT FORMAT RULES ===
 
@@ -135,6 +155,32 @@ class GraphAgentTool:
             ❌ WRONG: ORDER BY ca.filing_date DESC (causes syntax error after collect)
 
             === EXAMPLE QUERIES ===
+
+            Query: "Show all Ponzi schemes"
+            ❌ WRONG (missing relationships):
+            ```
+            MATCH (ca:Case)
+            WHERE 'Ponzi Scheme' IN ca.crime_types
+            RETURN ca.lr_number, ca.title, ca.filing_date
+            ORDER BY ca.filing_date DESC
+            LIMIT 20
+            ```
+
+            ✅ CORRECT (with relationships):
+            ```
+            MATCH (ca:Case)
+            WHERE 'Ponzi Scheme' IN ca.crime_types
+            OPTIONAL MATCH (p:Person)-[:CHARGED_IN]->(ca)
+            OPTIONAL MATCH (comp:Company)-[:INVOLVED_IN]->(ca)
+            RETURN 
+            ca.lr_number AS case_lr_number,
+            ca.title AS case_title,
+            ca.filing_date AS case_filing_date,
+            collect(DISTINCT p.name) AS persons,
+            collect(DISTINCT comp.name) AS companies
+            ORDER BY case_filing_date DESC
+            LIMIT 20
+            ```
 
             Query: "Who was charged in Ponzi schemes?"
             Cypher:
@@ -407,21 +453,37 @@ def create_graph_tool(
         >>> tool_belt = [rag_tool, tavily_tool, graph_tool]
     """
     if tool_description is None:
-        tool_description = """Search the knowledge graph of financial crime cases, people, and companies.
+        tool_description = """Query the knowledge graph for RELATIONSHIPS and CONNECTIONS.
 
-            Use this tool when you need to:
-            - Find relationships between people, companies, and cases
-            - Identify co-defendants or people who worked at the same companies
-            - Find companies involved in multiple cases
-            - Get penalty information and amounts for specific entities
-            - Discover patterns across cases (repeat offenders, connected crimes)
-            - Explore connections not visible in document text
-
-            Do NOT use this tool for:
-            - Full case details or document text (use search_sec_documents instead)
-            - Current news or recent events (use tavily_search_results_json instead)
-
-            The graph is best for finding CONNECTIONS and RELATIONSHIPS between entities."""
+            USE THIS TOOL WHEN the query contains:
+            - WHO questions: "Who was charged in [crime type]?"
+            - WHICH questions: "Which companies were involved?"
+            - CONNECTION words: "show connections for [person]"
+            - LIST/SHOW requests: "List all people in [case type]"
+            
+            ⚠️ CRITICAL CITATION REQUIREMENTS:
+            Every factual claim MUST be cited using markdown link format:
+            [CASE_NUMBER](URL)
+            
+            Examples:
+            - Jed Wood was charged in [LR-26415](https://www.sec.gov/litigation/litreleases/lr-26415).
+            - Wood worked at Agridime, LLC [LR-26415](https://www.sec.gov/litigation/litreleases/lr-26415).
+            
+            Rules:
+            - Put citation at the END of the sentence before the period
+            - Link text: Case LR number where the relationship is established
+            - Link URL: Full SEC case URL
+            - NEVER make claims without citations
+            
+            The tool returns case URLs with each result - always use them.
+            
+            NEVER use for:
+            - "What happened?" (use search_sec_documents)
+            - Current news (use tavily_search_results_json)
+            
+            Returns:
+                Dictionary with entities and their associated case LR numbers and URLs
+    """
     
     graph_agent = GraphAgentTool(neo4j_manager, llm)
 
