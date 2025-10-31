@@ -262,47 +262,72 @@ class FinancialCrimeRAGSystem:
       # Ensure system prompt is ALWAYS first
       if not messages or not isinstance(messages[0], SystemMessage):
          messages = [SystemMessage(content=self.agent_system_prompt)] + messages
-      
+
+      last_ai_msg = next((m for m in reversed(messages) if isinstance(m, AIMessage)), None)
+      last_human_msg = next((m for m in reversed(messages) if isinstance(m, HumanMessage)), None)
+
       # Check if we have tool results
       tool_messages = [m for m in messages if isinstance(m, ToolMessage)]
       has_tool_results = len(tool_messages) > 0
       
-      # Check if we already injected tool calls
-      last_human_msg = next((m for m in reversed(messages) if isinstance(m, HumanMessage)), None)
-      already_has_tool_calls = (
-         last_human_msg and 
-         hasattr(last_human_msg, 'tool_calls') and 
-         last_human_msg.tool_calls
-      )
+      # # Check if we already injected tool calls
+      # last_human_msg = next((m for m in reversed(messages) if isinstance(m, HumanMessage)), None)
+      # already_has_tool_calls = (
+      #    last_human_msg and 
+      #    hasattr(last_human_msg, 'tool_calls') and 
+      #    last_human_msg.tool_calls
+      # )
       
-      # Determine expected number of tools based on routing
-      user_msg = messages[-1].content if isinstance(messages[-1], HumanMessage) else None
+      ai_has_tool_calls = (
+        last_ai_msg and 
+        hasattr(last_ai_msg, 'tool_calls') and 
+        last_ai_msg.tool_calls and
+        len(last_ai_msg.tool_calls) > 0
+      )
+      # # Determine expected number of tools based on routing
+      # user_msg = messages[-1].content if isinstance(messages[-1], HumanMessage) else None
       
       # If we haven't routed yet OR we're on the initial call
-      if not already_has_tool_calls and not has_tool_results:
+      if not ai_has_tool_calls and not has_tool_results:
          # First call - route and inject tool calls
-         logger.info("🔀 Initial routing")
-         route = self.route_intent(user_msg or last_human_msg.content)
+         logger.info(" Initial routing")
+         route = self.route_intent(last_human_msg.content if last_human_msg else messages[-1].content)
          logger.info(f"ROUTING: {route.use_tools} → {route.reason}")
          
          if route.use_tools:
+               from langchain_core.messages.tool import ToolCall
+               import uuid
                # Inject tool calls
-               for msg in reversed(messages):
-                  if isinstance(msg, HumanMessage):
-                     msg.tool_calls = [
-                           {"name": t, "args": {"query": msg.content}}
-                           for t in route.use_tools
-                     ]
-                     break
-               return {"messages": [self.llm_bind_tool.invoke(messages)]}
+               # for msg in reversed(messages):
+               #    if isinstance(msg, HumanMessage):
+               #       msg.tool_calls = [
+               #             {"name": t, "args": {"query": msg.content}}
+               #             for t in route.use_tools
+               #       ]
+               #       break
+               # return {"messages": [self.llm_bind_tool.invoke(messages)]}
+               tool_calls = [
+                ToolCall(
+                    name=tool_name,
+                    args={"query": last_human_msg.content},
+                    id=str(uuid.uuid4())
+                )
+                for tool_name in route.use_tools
+            ]
+               ai_msg = AIMessage(content="", tool_calls=tool_calls)
+            
+               logger.debug(f"Created AI message with tool calls: {[tc['name'] for tc in tool_calls]}")
+               
+               # Return AI message with tool calls - ToolNode will handle execution
+               return {"messages": [ai_msg]}
          else:
                # No tools needed
                response = self.structured_llm.invoke(messages)
                return {"messages": [AIMessage(content=response.answer_text)]}
       
       # If tools were called but we're waiting for more tools to execute
-      elif already_has_tool_calls and has_tool_results:
-         num_tools_called = len(last_human_msg.tool_calls) if last_human_msg else 0
+      elif ai_has_tool_calls and has_tool_results:
+         num_tools_called = len(last_ai_msg.tool_calls)
          num_tools_returned = len(tool_messages)
          
          logger.debug(f"Tools called: {num_tools_called}, Tools returned: {num_tools_returned}")
@@ -322,10 +347,26 @@ class FinancialCrimeRAGSystem:
                response = self.llm_bind_tool.invoke(messages_with_reminder)
                return {"messages": [response]}
       
-      # Fallback - just generate response
-      logger.info("➡️ Fallback - generating response")
-      response = self.structured_llm.invoke(messages)
-      return {"messages": [AIMessage(content=response.answer_text)]}
+      elif ai_has_tool_calls and not has_tool_results:
+        # Tool calls created but not executed yet - wait
+        logger.info("⏳ Tool calls created, waiting for execution...")
+        return {"messages": []}
+    
+      else:
+         # Fallback - shouldn't reach here
+         logger.warning("⚠️ Unexpected state - using fallback")
+         logger.debug(f"ai_has_tool_calls: {ai_has_tool_calls}, has_tool_results: {has_tool_results}")
+         response = self.llm_bind_tool.invoke(messages)
+         return {"messages": [response]}
+
+      
+      # # Fallback - just generate response
+      # logger.info(" Fallback - generating response")
+      # response = self.llm_bind_tool.invoke(messages)
+      # return {"messages": [response]}
+
+      # response = self.structured_llm.invoke(messages)
+      # return {"messages": [AIMessage(content=response.answer_text)]}
    
    def _tool_call(self, state: AgentState) -> ToolNode:
       """Initialize ToolNode"""
@@ -534,7 +575,10 @@ class FinancialCrimeRAGSystem:
                   elif tool_name == "search_knowledge_graph":
                      if hasattr(self.graph_tool, '_search_instance'):
                         graph_results = self.graph_tool._search_instance._last_query_results
-                        logger.info(f"Retrieved {graph_results['count']} graph results for visualization")
+                        if graph_results:
+                           logger.info(f"Retrieved {graph_results['count']} graph results for visualization")
+                        else:
+                           logger.info(f"Retrieved {len(graph_results)} graph results for visualization")
                      # if self.current_filter:
                      #       docs = self.last_retrieved_docs
                      # else:
@@ -696,7 +740,7 @@ if __name__ == "__main__":
    # uses sec_documents
    # question = "What penalties were issued for insider trading in 2025?"
    # question = "What is LR-26161 about?" #"Who is Baris Cabalar? Check documents"
-   question = "Show me all Ponzi schemes. Use knowledge graph tool"
+   question = "list all charges in insider trading. use knowledge graph"
 
    # answer = rag_system.query(question)
 
