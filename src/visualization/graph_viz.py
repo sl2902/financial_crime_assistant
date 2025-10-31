@@ -71,6 +71,18 @@ class GraphVisualizer:
             "label": "received",
             "color": "#95e1d3",
             "title": "Received penalty"
+        },
+        "CO_DEFENDANT": {
+            "icon": "🤝",
+            "label": "co-defendant",
+            "color": "#ff6b6b",
+            "title": "Charged in same case"
+        },
+        "WORKED_WITH": {
+            "icon": "👥",
+            "label": "colleague",
+            "color": "#4ecdc4",
+            "title": "Worked at same company"
         }
     }
 
@@ -188,11 +200,11 @@ class GraphVisualizer:
 
         if isinstance(results, dict):
             if 'results' in results:
-                records = results['results']  # Current format
+                records = results['results']
             elif 'success' in results and 'results' in results:
                 records = results['results']
             else:
-                records = [results]  # Single record
+                records = [results]
         elif isinstance(results, list):
             records = results
         else:
@@ -203,8 +215,22 @@ class GraphVisualizer:
             
         for i, record in enumerate(records):
             logger.debug(f"Record {i+1}: keys={list(record.keys())}")
+            
             # === EXTRACT NODES ===
-
+            
+            # Person node (singular - for person info queries)
+            person_name = record.get('person_name')
+            if person_name and person_name not in nodes:
+                person_role = record.get('person_role', '')
+                nodes[person_name] = {
+                    'id': person_name,
+                    'name': person_name,
+                    'type': 'Person',
+                    'details': person_role or 'Person'
+                }
+                logger.debug(f"  Added person (singular): {person_name}")
+            
+            # Case node (singular)
             lr_number = record.get('case_lr_number') or record.get('lr_number')
             if lr_number and lr_number not in nodes:
                 title = record.get('case_title', '') or record.get('title', '')
@@ -216,7 +242,85 @@ class GraphVisualizer:
                 }
                 logger.debug(f"  Added case: {lr_number}")
             
-            persons = record.get('persons', []) or record.get('defendants', [])
+            # Co-defendants (structured - with case info)
+            co_defendants = record.get('co_defendants', [])
+            if isinstance(co_defendants, list):
+                for item in co_defendants:
+                    if isinstance(item, dict):
+                        co_name = item.get('name')
+                        shared_case = item.get('shared_case')
+                        
+                        # Create person node
+                        if co_name and co_name not in nodes:
+                            nodes[co_name] = {
+                                'id': co_name,
+                                'name': co_name,
+                                'type': 'Person',
+                                'details': 'Co-defendant'
+                            }
+                            logger.debug(f"  Added co-defendant: {co_name}")
+                        
+                        # Create case node
+                        if shared_case and shared_case not in nodes:
+                            nodes[shared_case] = {
+                                'id': shared_case,
+                                'name': shared_case,
+                                'type': 'Case',
+                                'details': ''
+                            }
+                            logger.debug(f"  Added case (from co-defendant): {shared_case}")
+                        
+                        # Create edges immediately while variables are in scope
+                        if person_name and co_name:
+                            edges.append({
+                                'source': person_name,
+                                'target': co_name,
+                                'relationship': 'CO_DEFENDANT'
+                            })
+                            edges.append({
+                                'source': co_name,
+                                'target': person_name,
+                                'relationship': 'CO_DEFENDANT'
+                            })
+                            logger.debug(f"  Edge: {person_name} <-> {co_name}")
+                        
+                        # Co-defendant → Case
+                        if co_name and shared_case:
+                            edges.append({
+                                'source': co_name,
+                                'target': shared_case,
+                                'relationship': 'CHARGED_IN'
+                            })
+                            logger.debug(f"  Edge: {co_name} -> {shared_case}")
+                        
+                        # Person → Case
+                        if person_name and shared_case:
+                            edges.append({
+                                'source': person_name,
+                                'target': shared_case,
+                                'relationship': 'CHARGED_IN'
+                            })
+                            logger.debug(f"  Edge: {person_name} -> {shared_case}")
+            
+            # Case nodes from 'cases' list
+            cases_list = record.get('cases', [])
+            if isinstance(cases_list, list):
+                for case_id in cases_list:
+                    if case_id and case_id not in nodes:
+                        nodes[case_id] = {
+                            'id': case_id,
+                            'name': case_id,
+                            'type': 'Case',
+                            'details': ''
+                        }
+                        logger.debug(f"  Added case (from list): {case_id}")
+            
+            # Person nodes from various list keys
+            persons = (
+                record.get('persons', []) or 
+                record.get('defendants', []) or 
+                record.get('partners', [])
+            )
             if isinstance(persons, list):
                 for person in persons:
                     if person and person not in nodes:
@@ -224,11 +328,11 @@ class GraphVisualizer:
                             'id': person,
                             'name': person,
                             'type': 'Person',
-                            'details': 'Defendant'
+                            'details': 'Person'
                         }
                         logger.debug(f"  Added person: {person}")
             
-            # Company nodes from 'companies' list
+            # Company nodes
             companies = record.get('companies', [])
             if isinstance(companies, list):
                 for company in companies:
@@ -243,7 +347,7 @@ class GraphVisualizer:
             
             # === CREATE EDGES ===
             
-            # Person -> Case (CHARGED_IN)
+            # Person -> Case (from list-based queries)
             if lr_number and persons:
                 for person in persons:
                     if person:
@@ -254,7 +358,29 @@ class GraphVisualizer:
                         })
                         logger.debug(f"  Edge: {person} -> {lr_number}")
             
-            # Company -> Case (INVOLVED_IN)
+            # Person -> Case (from person info query with cases list)
+            if person_name and cases_list:
+                for case_id in cases_list:
+                    if case_id:
+                        edges.append({
+                            'source': person_name,
+                            'target': case_id,
+                            'relationship': 'CHARGED_IN'
+                        })
+                        logger.debug(f"  Edge: {person_name} -> {case_id}")
+            
+            # Person -> Company (from person info query)
+            if person_name and companies:
+                for company in companies:
+                    if company:
+                        edges.append({
+                            'source': person_name,
+                            'target': company,
+                            'relationship': 'WORKED_AT'
+                        })
+                        logger.debug(f"  Edge: {person_name} -> {company}")
+            
+            # Company -> Case
             if lr_number and companies:
                 for company in companies:
                     if company:
@@ -264,6 +390,33 @@ class GraphVisualizer:
                             'relationship': 'INVOLVED_IN'
                         })
                         logger.debug(f"  Edge: {company} -> {lr_number}")
+            
+            # Partners (simple list, not structured)
+            partners = record.get('partners', [])
+            if person_name and isinstance(partners, list):
+                for partner in partners:
+                    if partner and isinstance(partner, str):  # Make sure it's a string, not dict
+                        # Add partner node if not exists
+                        if partner not in nodes:
+                            nodes[partner] = {
+                                'id': partner,
+                                'name': partner,
+                                'type': 'Person',
+                                'details': 'Co-defendant'
+                            }
+                        
+                        # Bidirectional edges
+                        edges.append({
+                            'source': person_name,
+                            'target': partner,
+                            'relationship': 'CO_DEFENDANT'
+                        })
+                        edges.append({
+                            'source': partner,
+                            'target': person_name,
+                            'relationship': 'CO_DEFENDANT'
+                        })
+                        logger.debug(f"  Edge: {person_name} <-> {partner}")
         
         # Remove duplicate edges
         seen = set()
@@ -559,7 +712,7 @@ if __name__ == "__main__":
     viz = GraphVisualizer(layout="force_atlas")
     output_file = viz.visualize(example_results, "example_graph.html")
     
-    print(f"✅ Graph visualization created: {output_file}")
+    print(f" Graph visualization created: {output_file}")
     print("\nOpen the file in a browser to see the interactive graph!")
     print("\nFeatures:")
     print("  - 👤 Red nodes = Persons")
