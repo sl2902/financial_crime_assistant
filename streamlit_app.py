@@ -510,14 +510,11 @@ if st.session_state.messages:
     result = latest["answer"]
     if isinstance(result, dict) and result.get("tools_used") and execution_time:
         st.caption(f"🔧 Tools: {', '.join(result['tools_used'])} 🕒 Execution Time: {round(execution_time, 2)} seconds")
-        # st.write(f'Number of sources {len(result.get("sources"))}')
+        if answer_text.get("tools_used") and 'search_knowledge_graph' in answer_text.get("tools_used"):
+            display_graph_visualization(answer_text.get("graph_results", {}).get("results", []), answer_text)
     else:
         if execution_time:
             st.caption(f"🕒 Execution Time: {round(execution_time, 2)} seconds")
-    
-    logger.info(f"Tool used {answer_text.get('tools_used')}")
-    if answer_text.get("tools_used") and 'search_knowledge_graph' in answer_text.get("tools_used"):
-        display_graph_visualization(answer_text.get("graph_results", {}).get("results", []), answer_text)
     
     # Show conversation history
     if len(st.session_state.messages) > 1:
