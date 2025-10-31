@@ -430,11 +430,16 @@ query = st.text_input(
     placeholder="e.g., What are typical penalties for insider trading?"
 )
 
+# avoid the button from being 'clicked' more than once
+if "last_processed_query" not in st.session_state:
+    st.session_state.last_processed_query = None
+
 # Query button with mode indicator
 execution_time = None
 button_text = f"Submit ({rag_mode})"
 if st.button(button_text, type="primary") or (query and len(st.session_state.messages) == 0):
-    if query:
+    if query  and st.session_state.last_processed_query != query:
+        st.session_state.last_processed_query = query
         with st.spinner(f"{'Searching documents...' if rag_mode == 'Plain RAG' else 'Searching documents and web...'}"):
             # Call appropriate method based on mode
             try:
@@ -461,12 +466,15 @@ if st.button(button_text, type="primary") or (query and len(st.session_state.mes
                     "mode": rag_mode
                 })
                 end = time.time()
+                execution_time = end - start
             except ValidationError as err:
                 logger.error(f"Citation validation failed: {err}")
+                st.error(" An error occurred — see details below")
+                import traceback
+                st.code(traceback.format_exc())
             except Exception as e:
                 st.error(f"Error: {str(e)}")
-                st.info("Try switching RAG modes or rephrasing your question.")
-        execution_time = end - start
+                st.info("Try switching RAG modes or rephrasing your question.")        
 
 # Display conversation history
 if st.session_state.messages:
@@ -502,13 +510,11 @@ if st.session_state.messages:
     result = latest["answer"]
     if isinstance(result, dict) and result.get("tools_used") and execution_time:
         st.caption(f"🔧 Tools: {', '.join(result['tools_used'])} 🕒 Execution Time: {round(execution_time, 2)} seconds")
-        # st.write(f'Number of sources {len(result.get("sources"))}')
+        if answer_text.get("tools_used") and 'search_knowledge_graph' in answer_text.get("tools_used"):
+            display_graph_visualization(answer_text.get("graph_results", {}).get("results", []), answer_text)
     else:
         if execution_time:
             st.caption(f"🕒 Execution Time: {round(execution_time, 2)} seconds")
-    
-    if answer_text.get("tools_used") and answer_text.get("tools_used")[0] == "search_knowledge_graph":
-        display_graph_visualization(answer_text.get("graph_results", {}).get("results", []), answer_text)
     
     # Show conversation history
     if len(st.session_state.messages) > 1:

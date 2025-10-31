@@ -8,6 +8,7 @@ from langchain.tools import Tool
 from langchain_core.language_models import BaseChatModel
 
 from src.kg.neo4j_manager import Neo4jManager
+from src.prompts.prompts import neo4j_prompt
 
 class GraphAgentTool:
     """Compact graph query tool using LLM to generate Cypher queries"""
@@ -22,7 +23,7 @@ class GraphAgentTool:
         self.manager = neo4j_manager
         self.llm = llm
         self.schema = self._get_schema_description()
-        self.last_query_results = {}
+        self._last_query_results = {}
     
     def _get_schema_description(self) -> str:
         return """
@@ -68,6 +69,9 @@ class GraphAgentTool:
             - Find person connections: MATCH (p:Person)-[:WORKED_AT]->(c:Company)<-[:WORKED_AT]-(other:Person)
             - Find repeat offenders: MATCH (p:Person)-[:CHARGED_IN]->(c:Case) WITH p, count(c) AS cases WHERE cases > 1
             - Date filtering: WHERE c.filing_date >= date('2023-01-01')
+            - Date ranges: WHERE c.filing_date >= date('2024-01-01') AND c.filing_date <= date('2024-12-31')
+            - After date: WHERE c.filing_date > date('2025-01-01')
+            - Before date: WHERE c.filing_date < date('2023-12-31')
             - Case-insensitive search: WHERE toLower(p.name) CONTAINS toLower('smith')
             """
     
@@ -80,162 +84,7 @@ class GraphAgentTool:
         Returns:
             Cypher query string
         """
-        prompt = f"""You are a Neo4j Cypher query expert. Convert the natural language question into a valid Cypher query.
-
-            SCHEMA:
-            {self.schema}
-
-            RULES:
-            1. CRITICAL: Obey the graph database schema
-            2. Return ONLY the Cypher query, no explanations
-            3. Use MATCH, WHERE, RETURN statements appropriately
-            4. Include OPTIONAL MATCH for related data that might not exist
-            5. Use LIMIT 20 by default unless the question specifies a different number
-            6. For text searches, use: toLower(property) CONTAINS toLower($search_term)
-            7. For date filtering, use: date() function
-            8. Always order by filing_date DESC for cases
-            9. Use collect() and count() for aggregations
-            10. For amount comparisons, ensure penalty.amount IS NOT NULL
-            11. Return meaningful property names in results
-            12. When using collect() or aggregations, ORDER BY must use the alias from RETURN, not the original variable
-            13. CRITICAL: When querying cases, ALWAYS include OPTIONAL MATCH for persons and companies. NEVER return just case properties without relationships.
-
-            IMPORTANT PATTERNS:
-            - Ponzi schemes: WHERE 'Ponzi Scheme' IN c.crime_types
-            - Person search: WHERE toLower(p.name) CONTAINS toLower('...')
-            - High penalties: WHERE pen.amount > 10000000 AND pen.amount IS NOT NULL
-            - Recent cases: ORDER BY c.filing_date DESC LIMIT 10
-            - Co-defendants: (p1:Person)-[:CHARGED_IN]->(case:Case)<-[:CHARGED_IN]-(p2:Person) WHERE p1 <> p2
-
-            === MANDATORY CASE QUERY TEMPLATE ===
-
-            For ANY query about cases, you MUST follow this template:
-            ```
-            MATCH (ca:Case)
-            WHERE <your_conditions>
-            OPTIONAL MATCH (p:Person)-[:CHARGED_IN]->(ca)
-            OPTIONAL MATCH (comp:Company)-[:INVOLVED_IN]->(ca)
-            RETURN 
-            ca.lr_number AS case_lr_number,
-            ca.title AS case_title,
-            ca.filing_date AS case_filing_date,
-            collect(DISTINCT p.name) AS persons,
-            collect(DISTINCT comp.name) AS companies
-            ORDER BY case_filing_date DESC
-            LIMIT 20
-            ```
-
-            === CRITICAL OUTPUT FORMAT RULES ===
-
-            When returning results, you MUST use these exact aliases:
-
-            1. Person data MUST use alias 'persons' (plural, as list):
-            ✅ CORRECT: collect(DISTINCT p.name) AS persons
-            ❌ WRONG: p.name AS defendant
-            ❌ WRONG: p.name AS person_name
-            ❌ WRONG: collect(p.name) AS defendants
-
-            2. Company data MUST use alias 'companies' (plural, as list):
-            ✅ CORRECT: collect(DISTINCT comp.name) AS companies
-            ❌ WRONG: comp.name AS company
-            ❌ WRONG: comp.name AS organization
-            ❌ WRONG: collect(comp.name) AS orgs
-
-            3. Case data MUST use 'case_' prefix for clarity:
-            ✅ CORRECT: ca.lr_number AS case_lr_number
-            ✅ CORRECT: ca.title AS case_title
-            ✅ CORRECT: ca.filing_date AS case_filing_date
-
-            4. ALWAYS use collect(DISTINCT ...) for one-to-many relationships:
-            ✅ CORRECT: collect(DISTINCT p.name) AS persons
-            ❌ WRONG: p.name AS persons (returns multiple rows)
-
-            5. ORDER BY with aggregation - use the alias, not original variable:
-            ✅ CORRECT: ORDER BY case_filing_date DESC
-            ❌ WRONG: ORDER BY ca.filing_date DESC (causes syntax error after collect)
-
-            === EXAMPLE QUERIES ===
-
-            Query: "Show all Ponzi schemes"
-            ❌ WRONG (missing relationships):
-            ```
-            MATCH (ca:Case)
-            WHERE 'Ponzi Scheme' IN ca.crime_types
-            RETURN ca.lr_number, ca.title, ca.filing_date
-            ORDER BY ca.filing_date DESC
-            LIMIT 20
-            ```
-
-            ✅ CORRECT (with relationships):
-            ```
-            MATCH (ca:Case)
-            WHERE 'Ponzi Scheme' IN ca.crime_types
-            OPTIONAL MATCH (p:Person)-[:CHARGED_IN]->(ca)
-            OPTIONAL MATCH (comp:Company)-[:INVOLVED_IN]->(ca)
-            RETURN 
-            ca.lr_number AS case_lr_number,
-            ca.title AS case_title,
-            ca.filing_date AS case_filing_date,
-            collect(DISTINCT p.name) AS persons,
-            collect(DISTINCT comp.name) AS companies
-            ORDER BY case_filing_date DESC
-            LIMIT 20
-            ```
-
-            Query: "Who was charged in Ponzi schemes?"
-            Cypher:
-            ```
-            MATCH (ca:Case)
-            WHERE 'Ponzi Scheme' IN ca.crime_types
-            OPTIONAL MATCH (p:Person)-[:CHARGED_IN]->(ca)
-            OPTIONAL MATCH (comp:Company)-[:INVOLVED_IN]->(ca)
-            RETURN 
-            ca.lr_number AS case_lr_number,
-            ca.title AS case_title,
-            ca.filing_date AS case_filing_date,
-            collect(DISTINCT p.name) AS persons,
-            collect(DISTINCT comp.name) AS companies
-            ORDER BY case_filing_date DESC
-            LIMIT 20
-            ```
-
-            Query: "Show connections for John Smith"
-            Cypher:
-            ```
-            MATCH (p:Person {{name: 'John Smith'}})
-            OPTIONAL MATCH (p)-[:WORKED_AT]->(comp:Company)
-            OPTIONAL MATCH (p)-[:CHARGED_IN]->(ca:Case)
-            RETURN 
-            p.name AS person_name,
-            collect(DISTINCT comp.name) AS companies,
-            collect(DISTINCT ca.lr_number) AS cases
-            ```
-
-            Query: "Find recent fraud cases with high penalties"
-            Cypher:
-            ```
-            MATCH (ca:Case)-[:HAS_PENALTY]->(pen:Penalty)
-            WHERE 'Fraud' IN ca.crime_types AND pen.amount > 10000000
-            OPTIONAL MATCH (p:Person)-[:CHARGED_IN]->(ca)
-            RETURN 
-            ca.lr_number AS case_lr_number,
-            ca.title AS case_title,
-            ca.filing_date AS case_filing_date,
-            sum(pen.amount) AS total_penalty,
-            collect(DISTINCT p.name) AS persons
-            ORDER BY case_filing_date DESC
-            LIMIT 10
-            ```
-
-            === ENFORCEMENT ===
-            - Use exact aliases: persons, companies, case_lr_number, case_title, case_filing_date
-            - Never use synonyms: defendant, accused, organization, corporation
-            - Always use collect(DISTINCT ...) for lists
-            - After collect(), ORDER BY must use the alias (case_filing_date), not the variable (ca.filing_date)
-
-            Question: {question}
-
-            Cypher query:"""
+        prompt = neo4j_prompt.format(schema=self.schema, question=question)
         
         try:
             response = self.llm.invoke(prompt)

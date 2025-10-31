@@ -11,7 +11,7 @@ import asyncio
 from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 # from langchain_community.tools.tavily_search import TavilySearchResults
 from langchain_tavily import TavilySearch
@@ -37,9 +37,14 @@ from src.schemas.rag_schemas import(
    Citation,
    StructuredAnswer, 
    RAGResponse,
-   QueryInput
+   QueryInput,
 ) 
+from src.schemas.intent_schemas import RoutingDecision
 from src.kg.graph_agent_tool import Neo4jManager, create_graph_tool
+from src.prompts.prompts import (
+   chat_prompt,
+   router_prompt
+)
 
 load_dotenv()
 
@@ -49,33 +54,6 @@ os.environ["LANGCHAIN_TRACING_V2"] = "true"
 os.environ["LANGCHAIN_API_KEY"] = os.getenv("LANGCHAIN_API_KEY")
 os.environ["LANGCHAIN_PROJECT"] = "Financial-Crimes-Assistant"
 os.environ["LANGSMITH_ENDPOINT"] = "https://api.smith.langchain.com"
-
-CHAT_PROMPT = """
-            You are an expert financial crime compliance assistant helping KYC analysts.
-
-            Use the following context from SEC enforcement documents to answer the question.
-
-            CONTEXT:
-            {context}
-
-            QUERY:
-            {query}
-
-            Instructions:
-            - Answer based ONLY on the provided context
-            - Format your answer with clear structure:
-               * Use bullet points for listing multiple cases or facts
-               * Use numbered lists for comparisons or sequences
-               * Use headers (##) for different sections if the query asks for comparison
-            - When citing sources, use the format: [LR-XXXXX](URL) instead of just "Document 1"
-            - Include the full SEC.gov URL for each citation
-            - If the context doesn't contain the answer, say "I don't have enough information in the provided documents"
-            - Cite specific cases, amounts, dates and location when relevant
-            - When mentioning monetary amounts, ALWAYS include the dollar sign ($) - for example: "$6.76 billion" not "6.76 billion"
-            - Be concise but comprehensive
-
-            ANSWER:
-            """
 
 class State(TypedDict):
   query: str
@@ -161,6 +139,9 @@ class FinancialCrimeRAGSystem:
          - Financial crime cases and enforcement actions
          - Historical SEC cases and outcomes
          - Specific case details by crime type or date
+         - Inline citations: [LR-XXXXX](URL)
+         - Place immediately after factual claims
+         - Format: "The defendant was fined $500,000 [LR-26123](https://sec.gov/...)."
          Always use this tool unless the query explicitly asks for current news."""
       )
       self.tool_belt = [self.tavily_search_tool, self.rag_tool, self.graph_tool]
@@ -250,23 +231,142 @@ class FinancialCrimeRAGSystem:
 
       return {"response" : response}
    
+   # def _call_agent_model(self, state: AgentState) -> Dict:
+   #    """Call Agent node"""
+   #    messages = state["messages"]
+   #    if len(messages) == 1:
+   #      from langchain_core.messages import SystemMessage
+   #      messages = [SystemMessage(content=self.agent_system_prompt)] + messages
+   #    if len(messages) > 2 and any(hasattr(m, 'type') and m.type == 'tool' for m in messages):
+   #       # Use structured output for final answer
+   #       response = self.structured_llm.invoke(messages)
+   #       # Convert Pydantic model to string for messages
+   #       response = AIMessage(content=response.answer_text)
+   #    else:
+   #       response = self.llm_bind_tool.invoke(messages)
+      
+   #    return {
+   #       "messages" : [response]
+   #    }
+   def route_intent(self, query: str) -> RoutingDecision:
+      """Decide on which tool to call"""
+      router_llm = self.llm.with_structured_output(RoutingDecision)
+      router_chain = router_prompt | router_llm
+      return router_chain.invoke({"query": query})
+
+
    def _call_agent_model(self, state: AgentState) -> Dict:
       """Call Agent node"""
       messages = state["messages"]
-      if len(messages) == 1:
-        from langchain_core.messages import SystemMessage
-        messages = [SystemMessage(content=self.agent_system_prompt)] + messages
-      if len(messages) > 2 and any(hasattr(m, 'type') and m.type == 'tool' for m in messages):
-         # Use structured output for final answer
-         response = self.structured_llm.invoke(messages)
-         # Convert Pydantic model to string for messages
-         response = AIMessage(content=response.answer_text)
-      else:
-         response = self.llm_bind_tool.invoke(messages)
       
-      return {
-         "messages" : [response]
-      }
+      # Ensure system prompt is ALWAYS first
+      if not messages or not isinstance(messages[0], SystemMessage):
+         messages = [SystemMessage(content=self.agent_system_prompt)] + messages
+
+      last_ai_msg = next((m for m in reversed(messages) if isinstance(m, AIMessage)), None)
+      last_human_msg = next((m for m in reversed(messages) if isinstance(m, HumanMessage)), None)
+
+      # Check if we have tool results
+      tool_messages = [m for m in messages if isinstance(m, ToolMessage)]
+      has_tool_results = len(tool_messages) > 0
+      
+      # # Check if we already injected tool calls
+      # last_human_msg = next((m for m in reversed(messages) if isinstance(m, HumanMessage)), None)
+      # already_has_tool_calls = (
+      #    last_human_msg and 
+      #    hasattr(last_human_msg, 'tool_calls') and 
+      #    last_human_msg.tool_calls
+      # )
+      
+      ai_has_tool_calls = (
+        last_ai_msg and 
+        hasattr(last_ai_msg, 'tool_calls') and 
+        last_ai_msg.tool_calls and
+        len(last_ai_msg.tool_calls) > 0
+      )
+      # # Determine expected number of tools based on routing
+      # user_msg = messages[-1].content if isinstance(messages[-1], HumanMessage) else None
+      
+      # If we haven't routed yet OR we're on the initial call
+      if not ai_has_tool_calls and not has_tool_results:
+         # First call - route and inject tool calls
+         logger.info(" Initial routing")
+         route = self.route_intent(last_human_msg.content if last_human_msg else messages[-1].content)
+         logger.info(f"ROUTING: {route.use_tools} → {route.reason}")
+         
+         if route.use_tools:
+               from langchain_core.messages.tool import ToolCall
+               import uuid
+               # Inject tool calls
+               # for msg in reversed(messages):
+               #    if isinstance(msg, HumanMessage):
+               #       msg.tool_calls = [
+               #             {"name": t, "args": {"query": msg.content}}
+               #             for t in route.use_tools
+               #       ]
+               #       break
+               # return {"messages": [self.llm_bind_tool.invoke(messages)]}
+               tool_calls = [
+                ToolCall(
+                    name=tool_name,
+                    args={"query": last_human_msg.content},
+                    id=str(uuid.uuid4())
+                )
+                for tool_name in route.use_tools
+            ]
+               ai_msg = AIMessage(content="", tool_calls=tool_calls)
+            
+               logger.debug(f"Created AI message with tool calls: {[tc['name'] for tc in tool_calls]}")
+               
+               # Return AI message with tool calls - ToolNode will handle execution
+               return {"messages": [ai_msg]}
+         else:
+               # No tools needed
+               response = self.structured_llm.invoke(messages)
+               return {"messages": [AIMessage(content=response.answer_text)]}
+      
+      # If tools were called but we're waiting for more tools to execute
+      elif ai_has_tool_calls and has_tool_results:
+         num_tools_called = len(last_ai_msg.tool_calls)
+         num_tools_returned = len(tool_messages)
+         
+         logger.debug(f"Tools called: {num_tools_called}, Tools returned: {num_tools_returned}")
+         
+         if num_tools_returned < num_tools_called:
+               # Still waiting for more tool results - continue execution
+               logger.info("⏳ Waiting for more tool results...")
+               return {"messages": [self.llm_bind_tool.invoke(messages)]}
+         else:
+               # All tools executed - generate final answer
+               logger.info(" All tools executed - generating final answer")
+               
+               # CRITICAL: Re-inject system prompt with citation rules before final generation
+               citation_reminder = SystemMessage(content=self.agent_system_prompt)
+               messages_with_reminder = [citation_reminder] + [m for m in messages if not isinstance(m, SystemMessage)]
+               
+               response = self.llm_bind_tool.invoke(messages_with_reminder)
+               return {"messages": [response]}
+      
+      elif ai_has_tool_calls and not has_tool_results:
+        # Tool calls created but not executed yet - wait
+        logger.info("⏳ Tool calls created, waiting for execution...")
+        return {"messages": []}
+    
+      else:
+         # Fallback - shouldn't reach here
+         logger.warning("⚠️ Unexpected state - using fallback")
+         logger.debug(f"ai_has_tool_calls: {ai_has_tool_calls}, has_tool_results: {has_tool_results}")
+         response = self.llm_bind_tool.invoke(messages)
+         return {"messages": [response]}
+
+      
+      # # Fallback - just generate response
+      # logger.info(" Fallback - generating response")
+      # response = self.llm_bind_tool.invoke(messages)
+      # return {"messages": [response]}
+
+      # response = self.structured_llm.invoke(messages)
+      # return {"messages": [AIMessage(content=response.answer_text)]}
    
    def _tool_call(self, state: AgentState) -> ToolNode:
       """Initialize ToolNode"""
@@ -274,7 +374,7 @@ class FinancialCrimeRAGSystem:
 
    def _create_prompt(self) -> ChatPromptTemplate:
       """Create Chat Prompt Template"""
-      HUMAN_TEMPLATE = CHAT_PROMPT
+      HUMAN_TEMPLATE = chat_prompt
 
       return ChatPromptTemplate.from_messages([
             ("human", HUMAN_TEMPLATE)
@@ -325,19 +425,19 @@ class FinancialCrimeRAGSystem:
 
       workflow.add_node("agent", self._call_agent_model)
       workflow.add_node("action", self._tool_call)
-      workflow.add_node("graph_qa", self._should_use_graph)
+      # workflow.add_node("graph_qa", self._should_use_graph)
       workflow.set_entry_point("agent")
       workflow.add_conditional_edges(
          "agent", 
          self._should_continue,
          {
-            "graph": "graph_qa",
+            # "graph": "graph_qa",
             "tool": "action",
             "end": END,
          })
       
       workflow.add_edge("action", "agent")
-      workflow.add_edge("graph_qa", "agent")
+      # workflow.add_edge("graph_qa", "agent")
 
       return workflow.compile()
     
@@ -460,6 +560,7 @@ class FinancialCrimeRAGSystem:
          if hasattr(msg, 'tool_calls') and msg.tool_calls:
                for tool_call in msg.tool_calls:
                   tool_name = tool_call.get("name", "")
+                  logger.info(f"Tool used {tool_name}")
                   tools_used.append(tool_name)
 
                   if tool_name == "search_sec_documents":
@@ -474,7 +575,10 @@ class FinancialCrimeRAGSystem:
                   elif tool_name == "search_knowledge_graph":
                      if hasattr(self.graph_tool, '_search_instance'):
                         graph_results = self.graph_tool._search_instance._last_query_results
-                        logger.info(f"Retrieved {graph_results['count']} graph results for visualization")
+                        if graph_results:
+                           logger.info(f"Retrieved {graph_results['count']} graph results for visualization")
+                        else:
+                           logger.info(f"Retrieved {len(graph_results)} graph results for visualization")
                      # if self.current_filter:
                      #       docs = self.last_retrieved_docs
                      # else:
@@ -483,10 +587,15 @@ class FinancialCrimeRAGSystem:
       
       self.current_filter = None
       self.last_retrieved_docs = []
+
+      # clear messages tool_call for every new query
+      for msg in result["messages"]:
+        if hasattr(msg, 'tool_calls'):
+            msg.tool_calls = []
       
       return {
          "result": answer,
-         "tools_used": list(set(tools_used)),
+         "tools_used": list(dict.fromkeys(tools_used)),
          "sources": retrieved_docs,  # Return deduplicated sources
          "rag_query": rag_query or '',
          "graph_results": graph_results,
@@ -631,7 +740,7 @@ if __name__ == "__main__":
    # uses sec_documents
    # question = "What penalties were issued for insider trading in 2025?"
    # question = "What is LR-26161 about?" #"Who is Baris Cabalar? Check documents"
-   question = "Show me all Ponzi schemes. Use knowledge graph tool"
+   question = "list all charges in insider trading. use knowledge graph"
 
    # answer = rag_system.query(question)
 
