@@ -24,6 +24,7 @@ from src.rag.retriever import FinancialCrimeRAGSystem
 from src.schemas.rag_schemas import QueryInput
 from src.visualization.graph_viz import GraphVisualizer
 
+@st.cache_data
 def generate_html_graph(graph_results, answer_data):
     """Generate html graph file
     
