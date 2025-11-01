@@ -25,8 +25,8 @@ from src.schemas.rag_schemas import QueryInput
 from src.visualization.graph_viz import GraphVisualizer
 
 @st.cache_data
-def display_graph_visualization(graph_results, answer_data):
-    """Display interactive graph visualization in Streamlit.
+def generate_html_graph(graph_results, answer_data):
+    """Generate html graph file
     
     Args:
         graph_results: Results from graph query tool
@@ -44,52 +44,59 @@ def display_graph_visualization(graph_results, answer_data):
         st.info("🕸️ No network connections found for this query")
         return
     
-    # Create graph visualization
+    try:
+        # Initialize visualizer
+        viz = GraphVisualizer(height="650px", width="100%")
+        
+        # Create graph
+        html_file = viz.visualize(graph_results)
+        
+        # if os.path.exists(html_file):
+        #     # Read HTML
+        #     with open(html_file, 'r') as f:
+        #         html_content = f.read()
+
+        # Display in Streamlit
+        with open(html_file, 'r', encoding='utf-8') as f:
+            html_content = f.read()
+            return html_content
+        
+    except Exception as e:
+        st.error(f"Error creating graph visualization: {e}")
+
+def display_graph_visualization(html_content: str):
+    """Generate interactive graph visualization in Streamlit"""
+
     st.subheader("🕸️ Network Connections")
-    
     with st.expander("📊 View Interactive Graph", expanded=True):
-        try:
-            # Initialize visualizer
-            viz = GraphVisualizer(height="650px", width="100%")
-            
-            # Create graph
-            html_file = viz.visualize(graph_results)
-            
-            # if os.path.exists(html_file):
-            #     # Read HTML
-            #     with open(html_file, 'r') as f:
-            #         html_content = f.read()
 
-            # Display in Streamlit
-            with open(html_file, 'r', encoding='utf-8') as f:
-                html_content = f.read()
-            
-            
-            st.components.v1.html(html_content, height=800, scrolling=True)
-            
-            # Add legend
-            st.markdown("""
-            **Legend:**
-            - 👤 **Red nodes** = People
-            - 🏢 **Teal nodes** = Companies
-            - ⚖️ **Yellow nodes** = Cases
-            - 💰 **Mint nodes** = Penalties
-            
-            **Interactions:**
-            - 🖱️ Drag nodes to rearrange
-            - 🔍 Scroll to zoom
-            - 💡 Hover for details
-            """)
+        st.components.v1.html(html_content, height=800, scrolling=True)
 
-            st.download_button(
-                "📥 Download Graph HTML (if not visible above)",
-                data=html_content,
-                file_name="network_graph.html",
-                mime="text/html"
-            )
-            
-        except Exception as e:
-            st.error(f"Error creating graph visualization: {e}")
+        # Add legend
+        st.markdown("""
+        **Legend:**
+        - 👤 **Red nodes** = People
+        - 🏢 **Teal nodes** = Companies
+        - ⚖️ **Yellow nodes** = Cases
+        - 💰 **Mint nodes** = Penalties
+        
+        **Interactions:**
+        - 🖱️ Drag nodes to rearrange
+        - 🔍 Scroll to zoom
+        - 💡 Hover for details
+        """)
+
+        download_graph_file(html_content)
+
+
+def download_graph_file(html_content: str):
+    """Download html file"""
+    st.download_button(
+            "📥 Download Graph HTML (if not visible above)",
+            data=html_content,
+            file_name="network_graph.html",
+            mime="text/html"
+    )
 
 
 def custom_success(html_content: str, title="Success!"):
@@ -434,12 +441,27 @@ query = st.text_input(
 if "last_processed_query" not in st.session_state:
     st.session_state.last_processed_query = None
 
+if "last_used_mode" not in st.session_state:
+    st.session_state.last_used_mode = None
+
 # Query button with mode indicator
 execution_time = None
 button_text = f"Submit ({rag_mode})"
 if st.button(button_text, type="primary") or (query and len(st.session_state.messages) == 0):
-    if query  and st.session_state.last_processed_query != query:
+    query_changed = st.session_state.last_processed_query != query
+    mode_changed = st.session_state.last_used_mode != rag_mode
+
+    if query  and (query_changed or mode_changed):
         st.session_state.last_processed_query = query
+        st.session_state.last_used_mode = rag_mode
+
+        if query_changed and mode_changed:
+            logger.info(f" Query and mode both changed")
+        elif mode_changed:
+            logger.info(f" Mode changed to {rag_mode}, re-running query")
+        else:
+            logger.info(f" New query submitted")
+
         with st.spinner(f"{'Searching documents...' if rag_mode == 'Plain RAG' else 'Searching documents and web...'}"):
             # Call appropriate method based on mode
             try:
@@ -511,10 +533,9 @@ if st.session_state.messages:
     if isinstance(result, dict) and result.get("tools_used") and execution_time:
         st.caption(f"🔧 Tools: {', '.join(result['tools_used'])} 🕒 Execution Time: {round(execution_time, 2)} seconds")
         if answer_text.get("tools_used") and 'search_knowledge_graph' in answer_text.get("tools_used"):
-            display_graph_visualization(answer_text.get("graph_results", {}).get("results", []), answer_text)
-    else:
-        if execution_time:
-            st.caption(f"🕒 Execution Time: {round(execution_time, 2)} seconds")
+            html_content = generate_html_graph(answer_text.get("graph_results", {}).get("results", []), answer_text)
+            if html_content:
+                display_graph_visualization(html_content)
     
     # Show conversation history
     if len(st.session_state.messages) > 1:
